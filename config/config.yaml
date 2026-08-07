@@ -67,8 +67,8 @@ claude:
 # Notion — IDs de las bases de datos (reemplazar tras crearlas)
 # -----------------------------------------------------------------------------
 notion:
-  reuniones_database_id: "REEMPLAZAR_CON_ID_DE_BASE_REUNIONES"
-  tareas_database_id: "REEMPLAZAR_CON_ID_DE_BASE_TAREAS"
+  reuniones_database_id: "398dc879-21a1-8023-a6f9-da5f46990c1d"  # página "Reuniones"
+  tareas_database_id: "398dc879-21a1-8027-93d3-fef88be96453"      # página "Tareas" (Kanban)
   # Nombre exacto de las propiedades en Notion (deben coincidir con el esquema
   # real de tus bases; si les cambias el nombre en Notion, actualízalo aquí)
   propiedades_reuniones:
