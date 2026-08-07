@@ -1,0 +1,26 @@
+# Entorno Python
+venv/
+__pycache__/
+*.pyc
+
+# Secretos
+.env
+
+# Configuración local de Claude Code
+.claude/
+
+# Datos personales del pipeline (audio, transcripciones, staging, procesados)
+# Se conservan solo los .gitkeep para preservar la estructura de carpetas.
+data/audio/*
+!data/audio/.gitkeep
+data/transcripts/*
+!data/transcripts/.gitkeep
+data/staging/*
+!data/staging/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Logs sueltos
+*.log
+*_log.txt
+install_log.txt

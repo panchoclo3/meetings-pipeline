@@ -1,0 +1,97 @@
+# =============================================================================
+# Configuración central del pipeline "Segundo Cerebro"
+# =============================================================================
+# Este archivo es la ÚNICA fuente de verdad para el vocabulario controlado
+# (proyectos, tags) y los parámetros de cada herramienta. Editarlo aquí
+# se propaga automáticamente al prompt de extracción y a las propiedades
+# de Notion. No dupliques estas listas en otro lugar.
+
+# -----------------------------------------------------------------------------
+# Vocabulario controlado — evita que Claude invente variantes del mismo tag
+# (ej: "ergonomia" vs "ergonomía" vs "diseño ergonómico"). Edita estas listas
+# cuando necesites un proyecto o tag nuevo; el pipeline las usa como referencia
+# obligatoria en el prompt de extracción.
+# -----------------------------------------------------------------------------
+proyectos:
+  - "Ventana Celeste"
+  - "Tesis"
+  - "Personal"
+  - "Otro"
+
+tags_permitidos:
+  - "ergonomia"
+  - "software"
+  - "hardware"
+  - "sensores"
+  - "MIM"
+  - "prototipo-autonomo"
+  - "prototipo-mediado"
+  - "prototipo-hogar"
+  - "prototipo-escolar"
+  - "github-pages"
+  - "diseño-ux"
+  - "presupuesto"
+  - "testing-usuarios"
+  - "stellarium"
+  - "protobject"
+  - "arduino"
+  - "fusion360"
+
+tipos_reunion:
+  - "reunion_proyecto"
+  - "conversacion_profesor"
+  - "brainstorming"
+  - "espontanea"
+
+# -----------------------------------------------------------------------------
+# Diarización / ASR — WhisperX (motor gratuito, local)
+# -----------------------------------------------------------------------------
+whisperx:
+  model: "large-v3"        # calidad alta; usar "medium" si el equipo es lento
+  language: "es"
+  device: "cpu"             # cambiar a "cuda" si hay GPU NVIDIA disponible
+  compute_type: "int8"      # "int8" en CPU, "float16" en GPU
+  batch_size: 8
+  diarization: true
+  hf_token_env: "HF_TOKEN"  # nombre de la variable de entorno con el token de HuggingFace
+
+# -----------------------------------------------------------------------------
+# Extracción estructurada — Claude
+# -----------------------------------------------------------------------------
+claude:
+  model: "claude-sonnet-4-6"
+  max_tokens: 4096
+  temperature: 0.2   # baja: queremos extracción fiel, no creatividad
+
+# -----------------------------------------------------------------------------
+# Notion — IDs de las bases de datos (reemplazar tras crearlas)
+# -----------------------------------------------------------------------------
+notion:
+  reuniones_database_id: "REEMPLAZAR_CON_ID_DE_BASE_REUNIONES"
+  tareas_database_id: "REEMPLAZAR_CON_ID_DE_BASE_TAREAS"
+  # Nombre exacto de las propiedades en Notion (deben coincidir con el esquema
+  # real de tus bases; si les cambias el nombre en Notion, actualízalo aquí)
+  propiedades_reuniones:
+    titulo: "Título"
+    fecha: "Fecha"
+    proyecto: "Proyecto"
+    personas: "Personas"
+    tags: "Tags"
+    tipo: "Tipo"
+    estado: "Estado"
+  propiedades_tareas:
+    titulo: "Título"
+    proyecto: "Proyecto"
+    responsable: "Responsable"
+    prioridad: "Prioridad"
+    estado: "Estado"
+    reunion_origen: "Reunión origen"
+
+# -----------------------------------------------------------------------------
+# Rutas locales (relativas a la raíz del proyecto)
+# -----------------------------------------------------------------------------
+paths:
+  audio_dir: "data/audio"
+  transcripts_dir: "data/transcripts"
+  staging_dir: "data/staging"
+  processed_dir: "data/processed"
