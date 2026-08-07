@@ -72,7 +72,7 @@ notion:
   # Nombre exacto de las propiedades en Notion (deben coincidir con el esquema
   # real de tus bases; si les cambias el nombre en Notion, actualízalo aquí)
   propiedades_reuniones:
-    titulo: "Título"
+    titulo: "Agenda"
     fecha: "Fecha"
     proyecto: "Proyecto"
     personas: "Personas"
@@ -80,12 +80,34 @@ notion:
     tipo: "Tipo"
     estado: "Estado"
   propiedades_tareas:
-    titulo: "Título"
+    titulo: "Nombre"
     proyecto: "Proyecto"
-    responsable: "Responsable"
+    # "Responsable" es un campo person (usuarios reales de Notion) ya usado por
+    # el equipo — no lo tocamos. "Responsable (IA)" es un select aparte,
+    # creado para que el pipeline asigne su mejor estimación sin pisar el campo real.
+    responsable: "Responsable (IA)"
     prioridad: "Prioridad"
     estado: "Estado"
-    reunion_origen: "Reunión origen"
+    reunion_origen: "Reunion origen"
+  # Base "Decisiones" — solo lectura desde el pipeline (ver scripts/06_decisiones_reconciliacion.py).
+  # El pipeline NUNCA escribe aquí automáticamente; solo propone cambios.
+  decisiones_database_id: "398dc879-21a1-80c1-b99e-c890b78c05f0"
+  propiedades_decisiones:
+    decision: "Decision"
+    tema: "Tema"
+    razon: "Razon"
+    estado: "Estado"       # status: "Not started" | "In progress" | "Done"
+    prototipo: "Prototipo" # select: "Autonomo" | "Mediado"
+    fecha: "Fecha"
+
+# -----------------------------------------------------------------------------
+# Telegram — resumen semanal (scripts/05_weekly_digest.py)
+# -----------------------------------------------------------------------------
+telegram:
+  bot_token_env: "TELEGRAM_BOT_TOKEN"  # nombre de la variable de entorno con el token del bot
+  chat_id_env: "TELEGRAM_CHAT_ID"      # nombre de la variable de entorno con el chat_id destino
+  pagina_padre: "Ventana Celeste"       # página existente bajo la cual vive el resumen
+  pagina_resumenes: "Resúmenes semanales"  # subpágina donde se acumulan los resúmenes; se crea si no existe
 
 # -----------------------------------------------------------------------------
 # Rutas locales (relativas a la raíz del proyecto)

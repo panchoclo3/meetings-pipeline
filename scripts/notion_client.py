@@ -54,6 +54,69 @@ class NotionClient:
             payload["children"] = children
         return self._request("POST", "/pages", payload)
 
+    def create_subpage(self, parent_page_id: str, title: str, children: list = None) -> dict:
+        """
+        Crea una página simple (no un item de base de datos) bajo otra página.
+        Usado para la página "Resúmenes semanales" del paso 5 — a diferencia de
+        create_page(), el parent es page_id y la única propiedad es "title".
+        """
+        payload = {
+            "parent": {"page_id": parent_page_id},
+            "properties": {"title": prop_title(title)},
+        }
+        if children:
+            payload["children"] = children
+        return self._request("POST", "/pages", payload)
+
+    def query_database(self, database_id: str, filter_: dict = None, sorts: list = None) -> list:
+        """
+        Devuelve TODAS las páginas de una base, manejando la paginación de
+        Notion internamente (el llamador no necesita preocuparse de cursors).
+        """
+        payload = {}
+        if filter_:
+            payload["filter"] = filter_
+        if sorts:
+            payload["sorts"] = sorts
+        results = []
+        while True:
+            resp = self._request("POST", f"/databases/{database_id}/query", payload)
+            results.extend(resp["results"])
+            if not resp.get("has_more"):
+                break
+            payload["start_cursor"] = resp["next_cursor"]
+        return results
+
+    def get_block_children(self, block_id: str) -> list:
+        """Devuelve TODOS los bloques hijos de una página o bloque, paginando."""
+        results = []
+        start_cursor = None
+        while True:
+            path = f"/blocks/{block_id}/children"
+            if start_cursor:
+                path += f"?start_cursor={start_cursor}"
+            resp = self._request("GET", path)
+            results.extend(resp["results"])
+            if not resp.get("has_more"):
+                break
+            start_cursor = resp["next_cursor"]
+        return results
+
+    def append_block_children(self, block_id: str, children: list) -> dict:
+        return self._request("PATCH", f"/blocks/{block_id}/children", {"children": children})
+
+    def search(self, query: str, object_type: str = None) -> list:
+        """
+        Busca páginas/bases por título. Nota: solo encuentra objetos
+        compartidos con esta integración — si algo "no aparece", lo más
+        probable es que falte compartirlo (ver README.md).
+        """
+        payload = {"query": query}
+        if object_type:
+            payload["filter"] = {"value": object_type, "property": "object"}
+        resp = self._request("POST", "/search", payload)
+        return resp.get("results", [])
+
 
 # ---------------------------------------------------------------------------
 # Helpers para construir propiedades de Notion en el formato que espera la API
@@ -69,6 +132,13 @@ def prop_rich_text(text: str) -> dict:
 
 def prop_select(value: str) -> dict:
     return {"select": {"name": value}} if value else {"select": None}
+
+
+def prop_status(value: str) -> dict:
+    # A diferencia de "select", Notion no permite crear opciones de "status"
+    # nuevas vía API — el valor debe coincidir exactamente con una opción ya
+    # definida en la base (ver mapeo de estados en 04_push_notion.py).
+    return {"status": {"name": value}} if value else {"status": None}
 
 
 def prop_multi_select(values: list) -> dict:
@@ -107,6 +177,33 @@ def block_bulleted_item(text: str) -> dict:
         "type": "bulleted_list_item",
         "bulleted_list_item": {"rich_text": [{"text": {"content": text[:2000]}}]},
     }
+
+
+def block_plain_text(block: dict) -> str:
+    """
+    Extrae el texto plano de un bloque de Notion sin importar su tipo
+    (heading_1/2/3, paragraph, bulleted_list_item, to_do, quote, etc.).
+    Devuelve "" para bloques sin texto (divider, imagen, etc.) en vez de fallar.
+    """
+    block_type = block.get("type")
+    content = block.get(block_type, {}) if block_type else {}
+    rich_text = content.get("rich_text", [])
+    return "".join(rt.get("plain_text", "") for rt in rich_text)
+
+
+def page_title_plain_text(page: dict, title_property: str = None) -> str:
+    """
+    Extrae el título de una página de Notion. Si no se indica `title_property`,
+    busca automáticamente la propiedad de tipo "title" (su nombre varía entre
+    bases: "Nombre", "Agenda", "title" en páginas simples, etc.).
+    """
+    properties = page.get("properties", {})
+    prop = properties.get(title_property) if title_property else None
+    if prop is None:
+        prop = next((p for p in properties.values() if p.get("type") == "title"), None)
+    if not prop:
+        return ""
+    return "".join(rt.get("plain_text", "") for rt in prop.get("title", []))
 
 
 def block_todo(text: str, checked: bool = False) -> dict:

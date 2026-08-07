@@ -7,9 +7,14 @@ breve → escritura en Notion.
 ## Estado actual
 
 Instalado y probado de punta a punta (pasos 1→2→3) en Windows con Python 3.12,
-`whisperx` 3.8.6 y `ffmpeg` 9.0. Pendiente antes de poder usar el paso 4:
-crear las bases de datos en Notion y pegar sus IDs en `config/config.yaml`
-(ver [Setup de Notion](#3-setup-de-notion)).
+`whisperx` 3.8.6 y `ffmpeg` 9.0. Las bases de Notion (Reuniones, Tareas,
+Decisiones) ya existen con sus IDs cargados en `config/config.yaml` y sus
+propiedades mapeadas correctamente — **pero ninguna está compartida todavía
+con la integración de Notion**, así que los pasos 4, 5 y 6 fallan con un
+`404 object_not_found` hasta que se comparta cada base (ver
+[Setup de Notion](#3-setup-de-notion)). El resto de la lógica de esos tres
+pasos está escrita y probada a nivel de funciones puras (ver
+[Qué se probó y qué no](#qué-se-probó-y-qué-no)).
 
 ## Filosofía del pipeline (por qué está diseñado así)
 
@@ -29,21 +34,26 @@ crear las bases de datos en Notion y pegar sus IDs en `config/config.yaml`
 
 ```
 ventana-celeste-pipeline/
-├── config/config.yaml          ← vocabulario controlado (proyectos, tags) y parámetros
-├── prompts/extraction_prompt.txt ← prompt de extracción (editable sin tocar código)
+├── config/config.yaml                    ← vocabulario controlado, parámetros y mapeo de propiedades de Notion
+├── prompts/
+│   ├── extraction_prompt.txt             ← prompt del paso 2 (editable sin tocar código)
+│   ├── weekly_digest_prompt.txt          ← prompt del paso 5 (resumen semanal)
+│   └── decisiones_reconciliacion_prompt.txt ← prompt del paso 6 (propuesta de decisiones)
 ├── scripts/
-│   ├── 01_transcribe.py        ← Paso 1: ASR + diarización (WhisperX)
-│   ├── 02_extract.py           ← Paso 2: extracción estructurada (Claude API)
-│   ├── 03_staging_review.py    ← Paso 3: genera resumen .md para revisión
-│   ├── 04_push_notion.py       ← Paso 4: escribe en Notion (API directa)
-│   ├── pipeline.py             ← orquestador: corre pasos 1→2→3 y se detiene
-│   ├── notion_client.py        ← wrapper de la API REST de Notion
-│   └── schema.py                ← validación JSON Schema de la extracción
+│   ├── 01_transcribe.py                  ← Paso 1: ASR + diarización (WhisperX)
+│   ├── 02_extract.py                     ← Paso 2: extracción estructurada (Claude API)
+│   ├── 03_staging_review.py              ← Paso 3: genera resumen .md para revisión
+│   ├── 04_push_notion.py                 ← Paso 4: escribe en Notion (API directa)
+│   ├── 05_weekly_digest.py               ← Paso 5 (independiente): resumen semanal por Telegram
+│   ├── 06_decisiones_reconciliacion.py   ← Paso 6 (independiente): propuesta de decisiones, solo lectura de Notion
+│   ├── pipeline.py                       ← orquestador: corre pasos 1→2→3 y se detiene
+│   ├── notion_client.py                  ← wrapper de la API REST de Notion
+│   └── schema.py                          ← validación JSON Schema de la extracción
 ├── data/
-│   ├── audio/                  ← coloca aquí tus grabaciones
-│   ├── transcripts/            ← salida del paso 1
-│   ├── staging/                ← salida del paso 2, pendiente de revisión
-│   └── processed/              ← archivo histórico tras el paso 4
+│   ├── audio/                            ← coloca aquí tus grabaciones
+│   ├── transcripts/                      ← salida del paso 1
+│   ├── staging/                          ← salida del paso 2 (pendiente de revisión) y propuestas de decisiones del paso 6
+│   └── processed/                        ← archivo histórico tras el paso 4
 ├── requirements.txt
 └── .env.example
 ```
@@ -104,33 +114,56 @@ Los scripts (`01_transcribe.py`, `02_extract.py`, `04_push_notion.py`) cargan
 
 ### 3. Setup de Notion
 
-Crea dos bases de datos en Notion (pueden estar en la misma página) con
-**exactamente estos nombres de propiedad** (o ajusta `config.yaml` si prefieres
-otros nombres):
+Necesitas tres bases de datos en Notion (pueden estar en distintas páginas):
+**Reuniones**, **Tareas** y **Decisiones**. Los nombres de propiedad no tienen
+por qué ser exactamente los de abajo — lo único que importa es que coincidan
+con lo que está en `config/config.yaml` → `notion.propiedades_*`. Esta es la
+configuración real ya cargada en este repo, a modo de referencia:
 
 **Base "Reuniones"**
-| Propiedad | Tipo |
-|---|---|
-| Título | Title |
-| Fecha | Date |
-| Proyecto | Select (opciones: Ventana Celeste, Tesis, Personal, Otro) |
-| Personas | Multi-select |
-| Tags | Multi-select |
-| Tipo | Select (reunion_proyecto, conversacion_profesor, brainstorming, espontanea) |
-| Estado | Select (Borrador IA, Revisado) |
+| Propiedad | Tipo | Nombre real en `config.yaml` |
+|---|---|---|
+| Título | Title | `Agenda` |
+| Fecha | Date | `Fecha` |
+| Proyecto | Select | `Proyecto` |
+| Personas | Multi-select | `Personas` |
+| Tags | Multi-select | `Tags` |
+| Tipo | Select (reunion_proyecto, conversacion_profesor, brainstorming, espontanea) | `Tipo` |
+| Estado | **Select** (Borrador IA, Revisado) | `Estado` |
 
-**Base "Tareas"**
-| Propiedad | Tipo |
-|---|---|
-| Título | Title |
-| Proyecto | Select (mismas opciones que en Reuniones) |
-| Responsable | Select |
-| Prioridad | Select (alta, media, baja) |
-| Estado | Select (Pendiente, En progreso, Hecho) |
-| Reunión origen | Relation → apunta a la base "Reuniones" |
+**Base "Tareas" (Kanban)**
+| Propiedad | Tipo | Nombre real en `config.yaml` |
+|---|---|---|
+| Título | Title | `Nombre` |
+| Proyecto | Select | `Proyecto` |
+| Responsable (IA) | Select — **distinto** del campo `Responsable` tipo *person* que ya usa el equipo; no lo pisamos | `Responsable (IA)` |
+| Prioridad | Select (Alta, Media, Baja — con mayúscula inicial) | `Prioridad` |
+| Estado | **Status** (Not started, In progress, Done — en inglés) | `Estado` |
+| Reunión origen | Relation → apunta a "Reuniones" | `Reunion origen` (sin tilde) |
 
-Luego comparte ambas bases con tu integración (`···` en la esquina superior
-derecha de cada base → "Conexiones" → selecciona tu integración).
+> ⚠️ **`Estado` en Tareas es tipo `status`, no `select`** — Notion no deja
+> crear opciones de `status` nuevas vía API, así que el pipeline mapea
+> `"Pendiente"` → `"Not started"` en código
+> (`scripts/04_push_notion.py::ESTADO_TAREA_A_STATUS`). Si cambias las
+> opciones de esa base, actualiza también ese diccionario.
+> `Estado` en Reuniones, en cambio, sí es `select` — no necesita mapeo.
+
+**Base "Decisiones"** (el pipeline solo la **lee**, nunca escribe en ella —
+ver [Paso 6](#paso-6-independiente-reconciliación-de-decisiones-solo-propuesta)):
+| Propiedad | Tipo | Nombre real en `config.yaml` |
+|---|---|---|
+| Decision | Title | `Decision` |
+| Tema | Text | `Tema` |
+| Razon | Text | `Razon` |
+| Estado | Status (Not started, In progress, Done) | `Estado` |
+| Prototipo | Select (Autonomo, Mediado) | `Prototipo` |
+| Fecha | Date | `Fecha` |
+
+**Comparte las tres bases con tu integración** — este paso es fácil de
+olvidar y la falla resultante no es obvia: Notion devuelve un
+`404 object_not_found` (no un error de permisos) si la base existe pero no
+está compartida. En cada base: `···` (esquina superior derecha) → "Conexiones"
+→ selecciona tu integración.
 
 Copia el ID de cada base (está en la URL: `notion.so/xxxxx?v=...` — el `xxxxx`
 de 32 caracteres es el ID) y pégalo en `config/config.yaml`:
@@ -139,9 +172,29 @@ de 32 caracteres es el ID) y pégalo en `config/config.yaml`:
 notion:
   reuniones_database_id: "aquí el ID"
   tareas_database_id: "aquí el ID"
+  decisiones_database_id: "aquí el ID"
 ```
 
-### 4. Ajustar vocabulario controlado
+Para el paso 5 (resumen semanal) también necesitas compartir con la
+integración la página "Ventana Celeste" (o la que configures como
+`telegram.pagina_padre`) — el pipeline busca esa página por nombre para
+crear debajo la subpágina "Resúmenes semanales" la primera vez que corre.
+
+### 4. Setup de Telegram (opcional — solo para el paso 5)
+
+1. Habla con [@BotFather](https://t.me/BotFather) en Telegram → `/newbot` →
+   sigue las instrucciones → copia el token que te da (formato
+   `123456:ABC-...`) en `TELEGRAM_BOT_TOKEN`.
+2. Mándale cualquier mensaje a tu bot recién creado (si no le escribís primero,
+   Telegram no le deja enviarte mensajes a vos).
+3. Visita `https://api.telegram.org/bot<TU_TOKEN>/getUpdates` en el navegador
+   y busca `"chat":{"id": ...}` en la respuesta — ese número es tu
+   `TELEGRAM_CHAT_ID`.
+4. Si quieres otros nombres de página para el resumen semanal, ajusta
+   `telegram.pagina_padre` y `telegram.pagina_resumenes` en `config.yaml`
+   (por defecto: "Ventana Celeste" → "Resúmenes semanales").
+
+### 5. Ajustar vocabulario controlado
 
 Edita `config/config.yaml` → `proyectos` y `tags_permitidos` con tus valores
 reales (ya viene pre-cargado con los del proyecto Ventana Celeste como ejemplo).
@@ -150,8 +203,10 @@ Estas listas se inyectan automáticamente en el prompt de extracción.
 ## Uso
 
 > Los pasos 1→2→3 fueron probados de punta a punta con un audio de prueba y
-> funcionan tal como se describe abajo. El paso 4 (push a Notion) no se ha
-> probado todavía porque falta completar el [Setup de Notion](#3-setup-de-notion).
+> funcionan tal como se describe abajo. Los pasos 4, 5 y 6 están escritos y
+> probados a nivel de lógica, pero **la escritura/lectura real contra Notion
+> está bloqueada** hasta compartir las bases con la integración — ver
+> [Qué se probó y qué no](#qué-se-probó-y-qué-no).
 
 **Flujo recomendado (orquestado, se detiene antes de escribir en Notion):**
 
@@ -174,6 +229,50 @@ python scripts/03_staging_review.py data/staging/<archivo_generado>.json
 python scripts/04_push_notion.py data/staging/<archivo_generado>.json
 ```
 
+### Paso 5 (independiente) — Resumen semanal por Telegram
+
+No depende de audio ni de WhisperX — solo hace llamadas HTTP a Notion, Claude
+y Telegram, así que se puede correr desde un cron o tarea programada sin el
+resto del entorno de transcripción instalado:
+
+```bash
+python scripts/05_weekly_digest.py
+```
+
+Qué hace: junta las reuniones de los últimos 7 días desde la base
+"Reuniones", les pide a Claude un resumen en texto plano apto para Telegram
+(sin tablas ni encabezados grandes — solo `*negrita*`/`_cursiva_`), lo manda
+al chat configurado, y lo agrega también como bloque nuevo al final de la
+página "Resúmenes semanales" en Notion (la crea si no existe todavía).
+
+Si `scripts/06_decisiones_reconciliacion.py` está disponible, este paso
+importa su función `ejecutar_reconciliacion()` y agrega la propuesta de
+decisiones al **mismo** mensaje de Telegram — no son dos mensajes separados.
+
+### Paso 6 (independiente) — Reconciliación de decisiones (solo propuesta)
+
+```bash
+python scripts/06_decisiones_reconciliacion.py
+```
+
+Compara las decisiones extraídas esta semana (leyendo `data/processed/*.json`)
+contra la base real "Decisiones" en Notion, y le pide a Claude que proponga:
+qué decisiones son genuinamente nuevas, y qué decisiones existentes podrían
+necesitar un cambio de estado según lo discutido esta semana.
+
+**Este script nunca crea ni modifica páginas en la base "Decisiones"** —
+las decisiones de proyecto son datos sensibles y este pipeline no escribe
+sobre ellos sin confirmación humana explícita (ver
+[Filosofía del pipeline](#filosofía-del-pipeline-por-qué-está-diseñado-así)).
+En su lugar:
+- Guarda la propuesta completa en `data/staging/decisiones_propuesta_<fecha>.json`.
+- Cuando se corre como parte del paso 5, agrega la propuesta al mensaje de
+  Telegram como texto plano con formato de lista.
+
+La aplicación real de los cambios queda para que la revises a mano en Notion,
+o para un futuro script de aplicación separado que lea ese JSON (no incluido
+todavía a propósito).
+
 ## Qué revisar en el paso de staging
 
 El archivo `.md` generado pone **arriba** cualquier señal de incertidumbre:
@@ -185,6 +284,57 @@ El archivo `.md` generado pone **arriba** cualquier señal de incertidumbre:
 
 Si todo se ve bien, aprueba y avanza al paso 4. Si algo está mal, edita el `.json`
 correspondiente en `data/staging/` — es la fuente de verdad, no el `.md`.
+
+## Qué se probó y qué no
+
+Estado real al momento de escribir esto, para que sepas exactamente qué
+confiar y qué verificar vos mismo:
+
+**Probado con éxito:**
+- Pasos 1→2→3 (transcripción, extracción, staging): end-to-end con audio real.
+- `config/config.yaml`: nombres de propiedad corregidos contra el esquema real
+  provisto (Agenda, Nombre, "Responsable (IA)", "Reunion origen" sin tilde).
+- `scripts/notion_client.py`: `prop_status`, `query_database`,
+  `get_block_children`, `append_block_children`, `search`, `create_subpage`,
+  `block_plain_text`, `page_title_plain_text` — compilan y sus casos puros
+  (sin red) se probaron con datos de Notion simulados.
+- `scripts/04_push_notion.py`: mapeo `"Pendiente"` → `"Not started"` y
+  capitalización de prioridad (`alta` → `Alta`) verificados por inspección
+  y con un JSON de staging sintético.
+- `scripts/05_weekly_digest.py`: `build_prompt()` y `build_meeting_content()`
+  probados con un cliente de Notion simulado (sin red real).
+- `scripts/06_decisiones_reconciliacion.py`: `gather_decisiones_recientes()`
+  (filtra correctamente por fecha), `formatear_para_telegram()` (vacío y con
+  datos) y `parse_json_response()` probados con datos sintéticos.
+- El import dinámico de `06_decisiones_reconciliacion` desde `05_weekly_digest.py`
+  (el nombre empieza con un dígito, no es un identificador válido para
+  `import` normal — se usa `importlib.import_module` a propósito).
+
+**Bloqueado / sin probar contra las APIs reales:**
+- **Push real a Notion (paso 4)**: intenté correr `04_push_notion.py` contra
+  un JSON sintético y las bases reales — falló con
+  `404 object_not_found: Could not find database... Make sure the relevant
+  pages and databases are shared with your integration`. Las bases existen
+  y los IDs son correctos; lo que falta es **compartir las tres bases
+  (Reuniones, Tareas, Decisiones) y la página "Ventana Celeste" con la
+  integración** (ver [Setup de Notion](#3-setup-de-notion)). Una vez
+  compartidas, hay que volver a correr el paso 4 para confirmar que no hay
+  más errores 400 río abajo (por ejemplo, si alguna opción de `select`/`status`
+  no existe todavía en la base real).
+- **Consulta a Notion y envío a Telegram (pasos 5 y 6)**: no se probaron
+  contra las APIs reales por el mismo bloqueo de permisos, y además
+  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` todavía no están configurados en
+  `.env` (ver [Setup de Telegram](#4-setup-de-telegram-opcional-solo-para-el-paso-5)).
+- **Reconciliación de decisiones con datos reales**: `data/processed/` está
+  vacío en este momento, así que `ejecutar_reconciliacion()` nunca llegó a
+  consultar la base "Decisiones" ni a llamar a Claude en las pruebas — la
+  lógica de filtrado por fecha se probó con datos sintéticos, pero el flujo
+  completo (comparación real vía Claude) queda sin probar hasta que haya al
+  menos una reunión real procesada esta semana.
+
+**Siguiente vez que se retome este trabajo**: compartir las bases/página con
+la integración, completar las credenciales de Telegram, y volver a correr
+los pasos 4, 5 y 6 contra datos reales.
 
 ## Próximos pasos fuera de este pipeline
 

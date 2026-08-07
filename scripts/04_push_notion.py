@@ -36,6 +36,7 @@ from notion_client import (  # noqa: E402
     prop_title,
     prop_rich_text,
     prop_select,
+    prop_status,
     prop_multi_select,
     prop_date,
     prop_relation,
@@ -44,6 +45,22 @@ from notion_client import (  # noqa: E402
     block_bulleted_item,
     block_todo,
 )
+
+# La base "Tareas" (Kanban) usa un campo de tipo "status" para Estado, no
+# "select" — Notion no deja crear opciones de status nuevas vía API, así que
+# mapeamos el vocabulario en español del pipeline a las opciones en inglés
+# ya definidas en la base.
+ESTADO_TAREA_A_STATUS = {
+    "Pendiente": "Not started",
+    "En progreso": "In progress",
+    "Hecho": "Done",
+}
+
+
+def capitalizar_prioridad(prioridad: str) -> str:
+    # La extracción de Claude produce "alta"/"media"/"baja" en minúscula, pero
+    # el select "Prioridad" en Notion espera "Alta"/"Media"/"Baja".
+    return prioridad.capitalize() if prioridad else prioridad
 
 
 def load_config():
@@ -118,8 +135,8 @@ def build_tarea_properties(tarea: dict, reunion_page_id: str, cfg: dict) -> dict
     props = {
         p["titulo"]: prop_title(tarea["titulo"]),
         p["proyecto"]: prop_select(tarea["proyecto"]),
-        p["prioridad"]: prop_select(tarea["prioridad"]) if tarea["prioridad"] else {"select": None},
-        p["estado"]: prop_select("Pendiente"),
+        p["prioridad"]: prop_select(capitalizar_prioridad(tarea["prioridad"])),
+        p["estado"]: prop_status(ESTADO_TAREA_A_STATUS["Pendiente"]),
         p["reunion_origen"]: prop_relation([reunion_page_id]),
     }
     if tarea["responsable"]:
