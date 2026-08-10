@@ -64,11 +64,14 @@ claude:
   temperature: 0.2   # baja: queremos extracción fiel, no creatividad
 
 # -----------------------------------------------------------------------------
-# Notion — IDs de las bases de datos (reemplazar tras crearlas)
+# Notion — IDs de las bases de datos
 # -----------------------------------------------------------------------------
+# Los IDs reales NO se guardan acá (este archivo se versiona en git) — cada
+# clave apunta al nombre de la variable de entorno en .env que sí los tiene,
+# mismo patrón que whisperx.hf_token_env / telegram.bot_token_env más abajo.
 notion:
-  reuniones_database_id: "398dc879-21a1-8023-a6f9-da5f46990c1d"  # página "Reuniones"
-  tareas_database_id: "398dc879-21a1-8027-93d3-fef88be96453"      # página "Tareas" (Kanban)
+  reuniones_database_id_env: "NOTION_REUNIONES_DATABASE_ID"  # página "Reuniones"
+  tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"        # página "Tareas" (Kanban)
   # Nombre exacto de las propiedades en Notion (deben coincidir con el esquema
   # real de tus bases; si les cambias el nombre en Notion, actualízalo aquí)
   propiedades_reuniones:
@@ -91,7 +94,7 @@ notion:
     reunion_origen: "Reunion origen"
   # Base "Decisiones" — solo lectura desde el pipeline (ver scripts/06_decisiones_reconciliacion.py).
   # El pipeline NUNCA escribe aquí automáticamente; solo propone cambios.
-  decisiones_database_id: "398dc879-21a1-80c1-b99e-c890b78c05f0"
+  decisiones_database_id_env: "NOTION_DECISIONES_DATABASE_ID"
   propiedades_decisiones:
     decision: "Decision"
     tema: "Tema"
@@ -104,8 +107,8 @@ notion:
 # Telegram — resumen semanal (scripts/05_weekly_digest.py)
 # -----------------------------------------------------------------------------
 telegram:
-  bot_token_env: "8888294179:AAHsA52zszbTtj4vW21aL6rFOWXmDvovbeA"  # nombre de la variable de entorno con el token del bot
-  chat_id_env: "1517903121"      # nombre de la variable de entorno con el chat_id destino
+  bot_token_env: "TELEGRAM_BOT_TOKEN"  # nombre de la variable de entorno con el token del bot
+  chat_id_env: "TELEGRAM_CHAT_ID"      # nombre de la variable de entorno con el chat_id destino
   pagina_padre: "Ventana Celeste"       # página existente bajo la cual vive el resumen
   pagina_resumenes: "Resúmenes semanales"  # subpágina donde se acumulan los resúmenes; se crea si no existe
 

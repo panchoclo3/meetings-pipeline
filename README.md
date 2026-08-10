@@ -6,15 +6,14 @@ breve → escritura en Notion.
 
 ## Estado actual
 
-Instalado y probado de punta a punta (pasos 1→2→3) en Windows con Python 3.12,
-`whisperx` 3.8.6 y `ffmpeg` 9.0. Las bases de Notion (Reuniones, Tareas,
-Decisiones) ya existen con sus IDs cargados en `config/config.yaml` y sus
-propiedades mapeadas correctamente — **pero ninguna está compartida todavía
-con la integración de Notion**, así que los pasos 4, 5 y 6 fallan con un
-`404 object_not_found` hasta que se comparta cada base (ver
-[Setup de Notion](#3-setup-de-notion)). El resto de la lógica de esos tres
-pasos está escrita y probada a nivel de funciones puras (ver
-[Qué se probó y qué no](#qué-se-probó-y-qué-no)).
+**Probado de punta a punta con audio real**, en Windows con Python 3.12,
+`whisperx` 3.8.6 y `ffmpeg` 9.0: transcripción (paso 1) → extracción (paso 2)
+→ staging (paso 3) → push a Notion (paso 4) → resumen semanal por Telegram
+(paso 5) → propuesta de reconciliación de decisiones (paso 6). Las tres bases
+de Notion (Reuniones, Tareas, Decisiones) están compartidas con la
+integración y sus IDs viven en `.env` (ver
+[Setup de Notion](#3-setup-de-notion)). Detalle de qué se verificó en cada
+corrida: [Qué se probó y qué no](#qué-se-probó-y-qué-no).
 
 ## Filosofía del pipeline (por qué está diseñado así)
 
@@ -166,13 +165,23 @@ está compartida. En cada base: `···` (esquina superior derecha) → "Conexio
 → selecciona tu integración.
 
 Copia el ID de cada base (está en la URL: `notion.so/xxxxx?v=...` — el `xxxxx`
-de 32 caracteres es el ID) y pégalo en `config/config.yaml`:
+de 32 caracteres es el ID). **Los IDs no van en `config.yaml`** (ese archivo
+se versiona en git) — van en `.env`, y `config.yaml` solo referencia el
+nombre de la variable, igual que `whisperx.hf_token_env`:
 
 ```yaml
+# config/config.yaml
 notion:
-  reuniones_database_id: "aquí el ID"
-  tareas_database_id: "aquí el ID"
-  decisiones_database_id: "aquí el ID"
+  reuniones_database_id_env: "NOTION_REUNIONES_DATABASE_ID"
+  tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"
+  decisiones_database_id_env: "NOTION_DECISIONES_DATABASE_ID"
+```
+
+```bash
+# .env
+NOTION_REUNIONES_DATABASE_ID=xxxxx
+NOTION_TAREAS_DATABASE_ID=xxxxx
+NOTION_DECISIONES_DATABASE_ID=xxxxx
 ```
 
 Para el paso 5 (resumen semanal) también necesitas compartir con la
@@ -202,10 +211,9 @@ Estas listas se inyectan automáticamente en el prompt de extracción.
 
 ## Uso
 
-> Los pasos 1→2→3 fueron probados de punta a punta con un audio de prueba y
-> funcionan tal como se describe abajo. Los pasos 4, 5 y 6 están escritos y
-> probados a nivel de lógica, pero **la escritura/lectura real contra Notion
-> está bloqueada** hasta compartir las bases con la integración — ver
+> Los seis pasos fueron probados de punta a punta con audio real (incluyendo
+> Notion y Telegram reales) y funcionan tal como se describe abajo. Detalle
+> de qué se cubrió exactamente en esa corrida:
 > [Qué se probó y qué no](#qué-se-probó-y-qué-no).
 
 **Flujo recomendado (orquestado, se detiene antes de escribir en Notion):**
@@ -290,51 +298,51 @@ correspondiente en `data/staging/` — es la fuente de verdad, no el `.md`.
 Estado real al momento de escribir esto, para que sepas exactamente qué
 confiar y qué verificar vos mismo:
 
-**Probado con éxito:**
-- Pasos 1→2→3 (transcripción, extracción, staging): end-to-end con audio real.
-- `config/config.yaml`: nombres de propiedad corregidos contra el esquema real
-  provisto (Agenda, Nombre, "Responsable (IA)", "Reunion origen" sin tilde).
-- `scripts/notion_client.py`: `prop_status`, `query_database`,
-  `get_block_children`, `append_block_children`, `search`, `create_subpage`,
-  `block_plain_text`, `page_title_plain_text` — compilan y sus casos puros
-  (sin red) se probaron con datos de Notion simulados.
-- `scripts/04_push_notion.py`: mapeo `"Pendiente"` → `"Not started"` y
-  capitalización de prioridad (`alta` → `Alta`) verificados por inspección
-  y con un JSON de staging sintético.
-- `scripts/05_weekly_digest.py`: `build_prompt()` y `build_meeting_content()`
-  probados con un cliente de Notion simulado (sin red real).
-- `scripts/06_decisiones_reconciliacion.py`: `gather_decisiones_recientes()`
-  (filtra correctamente por fecha), `formatear_para_telegram()` (vacío y con
-  datos) y `parse_json_response()` probados con datos sintéticos.
-- El import dinámico de `06_decisiones_reconciliacion` desde `05_weekly_digest.py`
-  (el nombre empieza con un dígito, no es un identificador válido para
-  `import` normal — se usa `importlib.import_module` a propósito).
+**Probado end-to-end con audio y APIs reales** (audio de una sola voz,
+"Francisco", en `data/audio/test.mp3`):
+1. `01_transcribe.py` → transcripción + diarización real.
+2. `02_extract.py` → extracción estructurada real con Claude (sin datos de
+   relleno: personas, título, tareas, etc. salen del audio).
+3. `03_staging_review.py` → `.md` de revisión generado.
+4. `04_push_notion.py` → página creada en la base real "Reuniones" y su
+   tarea asociada en "Tareas", con Estado/Prioridad/Responsable (IA) en el
+   formato correcto (confirmado por la respuesta 200 de Notion, no solo por
+   inspección de payload).
+5. `05_weekly_digest.py` → encontró la reunión recién creada, generó el
+   resumen con Claude, lo mandó por Telegram y creó la subpágina
+   "Resúmenes semanales" bajo "Ventana Celeste" (no existía todavía).
+6. `06_decisiones_reconciliacion.py` (invocado desde el paso 5) → como el
+   audio de prueba no generó decisiones, devolvió una propuesta vacía
+   (`{"nuevas": [], "actualizaciones": []}`) sin llamar a Claude
+   innecesariamente, y la guardó en
+   `data/staging/decisiones_propuesta_<fecha>.json`. La comparación real
+   vía Claude (con al menos una decisión de por medio) queda para la
+   próxima vez que haya una reunión con decisiones reales.
 
-**Bloqueado / sin probar contra las APIs reales:**
-- **Push real a Notion (paso 4)**: intenté correr `04_push_notion.py` contra
-  un JSON sintético y las bases reales — falló con
-  `404 object_not_found: Could not find database... Make sure the relevant
-  pages and databases are shared with your integration`. Las bases existen
-  y los IDs son correctos; lo que falta es **compartir las tres bases
-  (Reuniones, Tareas, Decisiones) y la página "Ventana Celeste" con la
-  integración** (ver [Setup de Notion](#3-setup-de-notion)). Una vez
-  compartidas, hay que volver a correr el paso 4 para confirmar que no hay
-  más errores 400 río abajo (por ejemplo, si alguna opción de `select`/`status`
-  no existe todavía en la base real).
-- **Consulta a Notion y envío a Telegram (pasos 5 y 6)**: no se probaron
-  contra las APIs reales por el mismo bloqueo de permisos, y además
-  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` todavía no están configurados en
-  `.env` (ver [Setup de Telegram](#4-setup-de-telegram-opcional-solo-para-el-paso-5)).
-- **Reconciliación de decisiones con datos reales**: `data/processed/` está
-  vacío en este momento, así que `ejecutar_reconciliacion()` nunca llegó a
-  consultar la base "Decisiones" ni a llamar a Claude en las pruebas — la
-  lógica de filtrado por fecha se probó con datos sintéticos, pero el flujo
-  completo (comparación real vía Claude) queda sin probar hasta que haya al
-  menos una reunión real procesada esta semana.
+**Problemas encontrados durante esta corrida, y cómo se resolvieron** (ver
+también el historial de commits para el detalle completo):
+- `mkl_malloc: failed to allocate memory` al cargar el modelo Whisper
+  `large-v3` — falla transitoria de asignación de memoria; se resolvió
+  reintentando el mismo comando.
+- `UnicodeEncodeError` al imprimir emojis (✅, ⚠️) cuando los scripts corren
+  en una consola Windows con code page `cp1252` (pasa en Git Bash / cmd.exe,
+  no en esta versión de PowerShell) — se agregó
+  `sys.stdout.reconfigure(encoding="utf-8")` al inicio de todos los scripts.
+- `config.yaml` apuntaba a los IDs de las bases de Notion como strings
+  literales (`"NOTION_REUNIONES_DATABASE_ID"`) en vez de sus valores reales,
+  y el código todavía no sabía resolver eso — se implementó
+  `notion_client.get_database_id()`, que resuelve el ID real desde la
+  variable de entorno indicada en `config.yaml` (`*_database_id_env`, mismo
+  patrón que `hf_token_env`/`bot_token_env`). De paso se corrigió un typo en
+  `.env` (`NOTION_DECITIONS_DATABASE_ID` → `NOTION_DECISIONES_DATABASE_ID`).
 
-**Siguiente vez que se retome este trabajo**: compartir las bases/página con
-la integración, completar las credenciales de Telegram, y volver a correr
-los pasos 4, 5 y 6 contra datos reales.
+**Sin probar todavía:**
+- La reconciliación de decisiones con una decisión real de por medio (ver
+  punto 6 arriba) — falta una reunión real con `decisiones` no vacías.
+- El caso de una segunda corrida del paso 5 en la misma semana (¿la
+  subpágina "Resúmenes semanales" acumula bloques correctamente sin
+  duplicar contenido? — debería, porque solo hace `append`, pero no se
+  verificó dos veces seguidas).
 
 ## Próximos pasos fuera de este pipeline
 

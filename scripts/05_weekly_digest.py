@@ -28,6 +28,13 @@ nuevo (un resumen) al final de una página dedicada a resúmenes.
 """
 
 import sys
+
+# Ver nota equivalente en 01_transcribe.py: fuerza UTF-8 en stdout/stderr para
+# que los print() con emojis no revienten en una consola Windows con cp1252.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import requests
 from pathlib import Path
@@ -44,6 +51,7 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notion_client import (  # noqa: E402
     NotionClient,
+    get_database_id,
     block_plain_text,
     page_title_plain_text,
     block_heading,
@@ -62,7 +70,8 @@ def get_meetings_last_week(client: NotionClient, cfg: dict) -> list:
     hace_7_dias = (datetime.now() - timedelta(days=7)).date().isoformat()
     filter_ = {"property": p["fecha"], "date": {"on_or_after": hace_7_dias}}
     sorts = [{"property": p["fecha"], "direction": "ascending"}]
-    return client.query_database(cfg["notion"]["reuniones_database_id"], filter_, sorts)
+    reuniones_db = get_database_id(cfg["notion"], "reuniones")
+    return client.query_database(reuniones_db, filter_, sorts)
 
 
 def build_meeting_content(client: NotionClient, page: dict, cfg: dict) -> str:

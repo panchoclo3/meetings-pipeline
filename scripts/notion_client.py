@@ -18,6 +18,28 @@ NOTION_API_URL = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
 
+def get_database_id(cfg_notion: dict, name: str) -> str:
+    """
+    Resuelve el ID real de una base de datos a partir de la variable de
+    entorno indicada en config.yaml (ej: notion.reuniones_database_id_env).
+
+    Por qué: config.yaml se versiona en git, así que los IDs reales de las
+    bases (no son secretos como una API key, pero sí específicos de tu
+    workspace) viven en .env — mismo patrón que hf_token_env/bot_token_env.
+    """
+    env_var_key = f"{name}_database_id_env"
+    env_var_name = cfg_notion.get(env_var_key)
+    if not env_var_name:
+        raise RuntimeError(f"Falta '{env_var_key}' en config.yaml → notion.")
+    value = os.environ.get(env_var_name)
+    if not value:
+        raise RuntimeError(
+            f"Falta la variable de entorno {env_var_name} en .env con el ID "
+            f"real de la base '{name}'. Ver README.md sección 'Setup de Notion'."
+        )
+    return value
+
+
 class NotionClient:
     def __init__(self, token: str = None):
         self.token = token or os.environ.get("NOTION_API_KEY")

@@ -18,6 +18,13 @@ definidas en config.yaml (ver README.md sección 'Setup de Notion').
 """
 
 import sys
+
+# Ver nota equivalente en 01_transcribe.py: fuerza UTF-8 en stdout/stderr para
+# que los print() con emojis no revienten en una consola Windows con cp1252.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 import shutil
 import yaml
@@ -33,6 +40,7 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notion_client import (  # noqa: E402
     NotionClient,
+    get_database_id,
     prop_title,
     prop_rich_text,
     prop_select,
@@ -159,13 +167,8 @@ def main():
     with open(staging_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    reuniones_db = cfg["notion"]["reuniones_database_id"]
-    tareas_db = cfg["notion"]["tareas_database_id"]
-
-    if "REEMPLAZAR" in reuniones_db or "REEMPLAZAR" in tareas_db:
-        print("Error: faltan los IDs de las bases de datos en config.yaml.")
-        print("Ver README.md sección 'Setup de Notion'.")
-        sys.exit(1)
+    reuniones_db = get_database_id(cfg["notion"], "reuniones")
+    tareas_db = get_database_id(cfg["notion"], "tareas")
 
     client = NotionClient()
 

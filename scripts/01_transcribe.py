@@ -22,6 +22,15 @@ modelos pyannote/speaker-diarization en huggingface.co la primera vez.
 """
 
 import sys
+
+# En Windows, la consola puede quedar en cp1252 (según la terminal desde la
+# que se invoque) y los print() con emojis (✅, ⚠️, etc.) revientan con
+# UnicodeEncodeError. Forzamos UTF-8 para que el script funcione igual desde
+# PowerShell, cmd.exe o Git Bash.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 import yaml
 from pathlib import Path

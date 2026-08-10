@@ -17,6 +17,13 @@ Qué hace:
 """
 
 import sys
+
+# Ver nota equivalente en 01_transcribe.py: fuerza UTF-8 en stdout/stderr para
+# que los print() con emojis no revienten en una consola Windows con cp1252.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import subprocess
 from pathlib import Path
 

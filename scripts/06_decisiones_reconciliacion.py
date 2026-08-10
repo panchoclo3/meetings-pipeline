@@ -32,6 +32,13 @@ que lea el JSON generado.
 """
 
 import sys
+
+# Ver nota equivalente en 01_transcribe.py: fuerza UTF-8 en stdout/stderr para
+# que los print() con emojis no revienten en una consola Windows con cp1252.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 import yaml
 from pathlib import Path
@@ -45,7 +52,7 @@ PROMPT_PATH = ROOT / "prompts" / "decisiones_reconciliacion_prompt.txt"
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notion_client import NotionClient  # noqa: E402
+from notion_client import NotionClient, get_database_id  # noqa: E402
 
 
 def load_config() -> dict:
@@ -95,7 +102,8 @@ def gather_decisiones_recientes(processed_dir: Path, dias: int = 7) -> list:
 def get_decisiones_existentes(client: NotionClient, cfg: dict) -> list:
     """Trae todas las decisiones ya registradas en Notion, en formato plano."""
     p = cfg["notion"]["propiedades_decisiones"]
-    pages = client.query_database(cfg["notion"]["decisiones_database_id"])
+    decisiones_db = get_database_id(cfg["notion"], "decisiones")
+    pages = client.query_database(decisiones_db)
 
     existentes = []
     for page in pages:
