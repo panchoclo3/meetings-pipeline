@@ -104,8 +104,8 @@ notion:
 # Telegram — resumen semanal (scripts/05_weekly_digest.py)
 # -----------------------------------------------------------------------------
 telegram:
-  bot_token_env: "TELEGRAM_BOT_TOKEN"  # nombre de la variable de entorno con el token del bot
-  chat_id_env: "TELEGRAM_CHAT_ID"      # nombre de la variable de entorno con el chat_id destino
+  bot_token_env: "8888294179:AAHsA52zszbTtj4vW21aL6rFOWXmDvovbeA"  # nombre de la variable de entorno con el token del bot
+  chat_id_env: "1517903121"      # nombre de la variable de entorno con el chat_id destino
   pagina_padre: "Ventana Celeste"       # página existente bajo la cual vive el resumen
   pagina_resumenes: "Resúmenes semanales"  # subpágina donde se acumulan los resúmenes; se crea si no existe
 
