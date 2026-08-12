@@ -54,6 +54,7 @@ def build_prompt(transcripcion: str, cfg: dict) -> str:
         proyectos_lista="\n".join(f"- {p}" for p in cfg["proyectos"]),
         tags_lista="\n".join(f"- {t}" for t in cfg["tags_permitidos"]),
         tipos_lista="\n".join(f"- {t}" for t in cfg["tipos_reunion"]),
+        personas_lista="\n".join(f"- {p}" for p in cfg["personas_permitidas"]),
         transcripcion=transcripcion,
     )
 

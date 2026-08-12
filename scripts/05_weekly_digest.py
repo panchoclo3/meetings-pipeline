@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Paso 5 (independiente) — Resumen semanal por Telegram
+Paso 5 (independiente) — Resumen semanal en Notion
 
 Uso:
     python scripts/05_weekly_digest.py
@@ -10,21 +10,23 @@ Qué hace:
    últimos 7 días.
 2. Lee el contenido (bloques) de cada página encontrada — el resumen
    ejecutivo, decisiones, tareas, etc. ya quedaron ahí en el paso 4.
-3. Le pide a Claude un resumen semanal en texto plano, apto para Telegram.
-4. Si `scripts/06_decisiones_reconciliacion.py` está configurado, le agrega
-   al mismo mensaje una propuesta de decisiones nuevas/actualizadas (nunca
-   escribe en Notion por su cuenta — ver ese script).
-5. Envía el mensaje resultante por la API de Telegram.
-6. Agrega el mismo texto como bloque nuevo (con la fecha como encabezado) al
-   final de la página "Resúmenes semanales", creándola si no existe.
+3. Le pide a Claude un resumen semanal en texto plano.
+4. Corre la reconciliación de decisiones (paso 6) y aplica la propuesta
+   automáticamente en Notion (paso 7 — ver 07_aplicar_decisiones.py), y
+   agrega al mismo resumen un recuento de qué se creó/actualizó.
+5. Agrega el texto resultante como bloque nuevo (con la fecha como
+   encabezado) al final de la página "Resúmenes semanales", creándola si no
+   existe.
 
 Por qué es un script independiente: no depende de WhisperX ni de audio —
-solo hace llamadas HTTP a Notion, Claude y Telegram, así que puede correr
-en un cron/tarea programada sin el resto del entorno de transcripción.
+solo hace llamadas HTTP a Notion y Claude, así que puede correr en un
+cron/tarea programada sin el resto del entorno de transcripción.
 
 Filosofía del pipeline aplicada aquí: este script NUNCA modifica una
-reunión, tarea o decisión ya escrita — solo lee reuniones y agrega contenido
-nuevo (un resumen) al final de una página dedicada a resúmenes.
+reunión ya escrita — solo lee reuniones y agrega contenido nuevo (un
+resumen) al final de una página dedicada a resúmenes. Las decisiones, en
+cambio, sí se crean/actualizan automáticamente desde acá (ver paso 7) —
+ese es el único punto donde este pipeline escribe fuera de "solo agregar".
 """
 
 import sys
@@ -35,8 +37,6 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-import os
-import requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -56,6 +56,7 @@ from notion_client import (  # noqa: E402
     page_title_plain_text,
     block_heading,
     block_paragraph,
+    block_bulleted_item,
 )
 
 
@@ -72,6 +73,28 @@ def get_meetings_last_week(client: NotionClient, cfg: dict) -> list:
     sorts = [{"property": p["fecha"], "direction": "ascending"}]
     reuniones_db = get_database_id(cfg["notion"], "reuniones")
     return client.query_database(reuniones_db, filter_, sorts)
+
+
+def count_tareas_responsable_sin_resolver(client: NotionClient, cfg: dict) -> int:
+    """
+    Cuenta cuántas tareas en la base Tareas todavía tienen un responsable sin
+    resolver a user ID de Notion (ver scripts/04_push_notion.py::resolver_persona,
+    que deja constancia de esto en la propiedad "Notas" al crear la tarea).
+    Es una foto del estado actual en Notion, no solo de esta semana — nadie
+    edita "Notas" para "resolverla" automáticamente, así que sirve como
+    recordatorio recurrente hasta que se complete a mano.
+    """
+    p = cfg["notion"]["propiedades_tareas"]
+    tareas_db = get_database_id(cfg["notion"], "tareas")
+    filter_ = {
+        "property": p["notas"],
+        "rich_text": {"contains": "Responsable sin resolver"},
+    }
+    try:
+        return len(client.query_database(tareas_db, filter_))
+    except RuntimeError as e:
+        print(f"  ⚠️  No se pudo consultar tareas con responsable sin resolver: {e}")
+        return 0
 
 
 def build_meeting_content(client: NotionClient, page: dict, cfg: dict) -> str:
@@ -105,31 +128,14 @@ def call_claude(prompt: str, cfg: dict) -> str:
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
-def send_telegram_message(text: str, cfg: dict) -> None:
-    bot_token = os.environ.get(cfg["telegram"]["bot_token_env"])
-    chat_id = os.environ.get(cfg["telegram"]["chat_id_env"])
-    if not bot_token or not chat_id:
-        raise RuntimeError(
-            f"Faltan {cfg['telegram']['bot_token_env']} y/o {cfg['telegram']['chat_id_env']} "
-            "en el entorno. Ver README.md sección 'Setup de Telegram'."
-        )
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    # parse_mode "Markdown" (legado) es el que soporta *negrita*/_cursiva_ tal
-    # como se le pide al modelo en el prompt, sin el escapado estricto de caracteres
-    # que exige "MarkdownV2".
-    resp = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Telegram API error {resp.status_code}: {resp.text}")
-
-
 def find_or_create_resumenes_page(client: NotionClient, cfg: dict) -> str:
     """
     Busca la página "Resúmenes semanales" bajo la página padre configurada
     (por defecto "Ventana Celeste"). Si no existe, la crea. Devuelve su ID.
     """
-    tg_cfg = cfg["telegram"]
-    nombre_padre = tg_cfg["pagina_padre"]
-    nombre_resumenes = tg_cfg["pagina_resumenes"]
+    rs_cfg = cfg["resumen_semanal"]
+    nombre_padre = rs_cfg["pagina_padre"]
+    nombre_resumenes = rs_cfg["pagina_resumenes"]
 
     padre_resultados = [
         r for r in client.search(nombre_padre, object_type="page")
@@ -158,9 +164,14 @@ def find_or_create_resumenes_page(client: NotionClient, cfg: dict) -> str:
 def append_digest_to_notion(client: NotionClient, page_id: str, digest_text: str) -> None:
     hoy = datetime.now().date().isoformat()
     blocks = [block_heading(f"Resumen semanal — {hoy}", level=3)]
-    for parrafo in digest_text.split("\n"):
-        if parrafo.strip():
-            blocks.append(block_paragraph(parrafo.strip()))
+    for linea in digest_text.split("\n"):
+        linea = linea.strip()
+        if not linea:
+            continue
+        if linea.startswith("- "):
+            blocks.append(block_bulleted_item(linea[2:]))
+        else:
+            blocks.append(block_paragraph(linea))
     client.append_block_children(page_id, blocks)
 
 
@@ -181,22 +192,32 @@ def main():
     prompt = build_prompt(contenido)
     digest = call_claude(prompt, cfg)
 
-    # Reconciliación de decisiones (paso 6, opcional): si el módulo está
-    # disponible, se agrega su propuesta al MISMO mensaje semanal (nunca se
-    # escribe en Notion desde aquí — ver 06_decisiones_reconciliacion.py).
+    print("Revisando tareas con responsable sin resolver...")
+    sin_resolver = count_tareas_responsable_sin_resolver(client, cfg)
+    if sin_resolver:
+        digest += (
+            f"\n\n⚠️ {sin_resolver} tarea(s) en Notion con responsable sin "
+            "resolver (ver campo Notas) — complétalas a mano o agrega el "
+            "user ID en config.yaml → notion.resolucion_personas."
+        )
+
+    # Reconciliación de decisiones (paso 6) + aplicación automática (paso 7):
+    # a diferencia del resto de este script (que solo lee reuniones y agrega
+    # texto), esto sí escribe en la base "Decisiones" — ver docstring de
+    # 07_aplicar_decisiones.py para la justificación de ese cambio de diseño.
     try:
         import importlib
         decisiones_mod = importlib.import_module("06_decisiones_reconciliacion")
+        aplicar_mod = importlib.import_module("07_aplicar_decisiones")
         print("Generando propuesta de reconciliación de decisiones...")
-        propuesta_texto = decisiones_mod.ejecutar_reconciliacion(cfg)
-        if propuesta_texto:
-            digest = f"{digest}\n\n{propuesta_texto}"
+        propuesta = decisiones_mod.ejecutar_reconciliacion(cfg, client)
+        print("Aplicando propuesta de decisiones en Notion...")
+        resultado = aplicar_mod.aplicar_propuesta(propuesta, cfg, client)
+        resumen_decisiones = aplicar_mod.formatear_resumen_aplicacion(resultado)
+        if resumen_decisiones:
+            digest = f"{digest}\n\n{resumen_decisiones}"
     except Exception as e:
-        print(f"  ⚠️  Reconciliación de decisiones omitida ({e}).")
-
-    print("Enviando mensaje a Telegram...")
-    send_telegram_message(digest, cfg)
-    print("  ✅ Mensaje enviado.")
+        print(f"  ⚠️  Reconciliación/aplicación de decisiones omitida ({e}).")
 
     print("Guardando resumen en la página 'Resúmenes semanales' de Notion...")
     page_id = find_or_create_resumenes_page(client, cfg)

@@ -76,6 +76,10 @@ class NotionClient:
             payload["children"] = children
         return self._request("POST", "/pages", payload)
 
+    def update_page(self, page_id: str, properties: dict) -> dict:
+        """Actualiza propiedades de una página ya existente (no toca su contenido)."""
+        return self._request("PATCH", f"/pages/{page_id}", {"properties": properties})
+
     def create_subpage(self, parent_page_id: str, title: str, children: list = None) -> dict:
         """
         Crea una página simple (no un item de base de datos) bajo otra página.
@@ -127,6 +131,27 @@ class NotionClient:
     def append_block_children(self, block_id: str, children: list) -> dict:
         return self._request("PATCH", f"/blocks/{block_id}/children", {"children": children})
 
+    def list_users(self) -> list:
+        """
+        Devuelve TODOS los usuarios del workspace visibles para esta
+        integración, paginando internamente. Nota: solo devuelve miembros
+        con cuenta completa en el workspace — invitados ("guests") con
+        acceso limitado a páginas específicas no aparecen acá aunque
+        tengan tareas asignadas en Notion.
+        """
+        results = []
+        start_cursor = None
+        while True:
+            path = "/users"
+            if start_cursor:
+                path += f"?start_cursor={start_cursor}"
+            resp = self._request("GET", path)
+            results.extend(resp["results"])
+            if not resp.get("has_more"):
+                break
+            start_cursor = resp["next_cursor"]
+        return results
+
     def search(self, query: str, object_type: str = None) -> list:
         """
         Busca páginas/bases por título. Nota: solo encuentra objetos
@@ -173,6 +198,10 @@ def prop_date(iso_date: str) -> dict:
 
 def prop_relation(page_ids: list) -> dict:
     return {"relation": [{"id": pid} for pid in page_ids]}
+
+
+def prop_people(user_ids: list) -> dict:
+    return {"people": [{"id": uid} for uid in user_ids]}
 
 
 # ---------------------------------------------------------------------------

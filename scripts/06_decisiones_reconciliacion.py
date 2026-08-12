@@ -1,34 +1,31 @@
 #!/usr/bin/env python3
 """
-Reconciliación semanal de Decisiones — SOLO PROPUESTA, nunca escritura automática
+Reconciliación semanal de Decisiones — SOLO PROPUESTA (la aplicación real
+la hace scripts/07_aplicar_decisiones.py)
 
 Uso independiente (para depurar sin correr el resumen semanal completo):
     python scripts/06_decisiones_reconciliacion.py
 
-Uso normal: `05_weekly_digest.py` importa este módulo y llama a
-`ejecutar_reconciliacion()`, agregando el texto que devuelve al MISMO mensaje
-de Telegram del resumen semanal.
+Uso normal: `05_weekly_digest.py` importa este módulo, llama a
+`ejecutar_reconciliacion()` para obtener la propuesta, y se la pasa a
+`07_aplicar_decisiones.py::aplicar_propuesta()` para escribirla en Notion.
 
 Qué hace:
 1. Junta las decisiones extraídas en la última semana, leyendo
    data/processed/*.json (reuniones que ya pasaron por el paso 4).
 2. Consulta la base real "Decisiones" en Notion (solo lectura).
 3. Le pide a Claude que compare ambas listas y proponga:
-   - decisiones nuevas que no existen aún en la base.
+   - decisiones nuevas que no existen aún en la base (con su estado inicial).
    - actualizaciones de estado para decisiones existentes, con su razón.
 4. Guarda la propuesta completa en
-   data/staging/decisiones_propuesta_<fecha>.json — un artefacto estructurado
-   pensado para que una futura automatización de aprobación (o vos a mano)
-   la aplique.
+   data/staging/decisiones_propuesta_<fecha>.json — artefacto de auditoría
+   de lo que se generó esta corrida, independiente de si luego se aplicó.
 
-Por qué esto NUNCA escribe en la base "Decisiones": las decisiones de
-proyecto son exactamente el tipo de dato sensible que este pipeline no toca
-sin confirmación humana explícita (ver filosofía en README.md). Cambiar el
-estado de una decisión o crear una nueva sin que una persona lo confirme
-sería la automatización silenciosa que este proyecto evita a propósito. La
-aplicación real de estos cambios queda para revisión manual en Notion, o
-para un script de aplicación separado (deliberadamente no incluido aquí)
-que lea el JSON generado.
+Este script sigue sin escribir nada en la base "Decisiones" — solo compara
+y propone. La escritura real (crear páginas nuevas, actualizar estados)
+vive en 07_aplicar_decisiones.py, a propósito separada en otro paso: así
+la propuesta queda como un artefacto que se puede inspeccionar o volver a
+aplicar sin tener que repetir la llamada a Claude.
 """
 
 import sys
@@ -167,38 +164,15 @@ def guardar_propuesta(propuesta: dict, staging_dir: Path) -> Path:
     return out_path
 
 
-def formatear_para_telegram(propuesta: dict) -> str:
-    """Devuelve "" si no hay nada que proponer, para no ensuciar el mensaje semanal."""
-    nuevas = propuesta.get("nuevas", [])
-    actualizaciones = propuesta.get("actualizaciones", [])
-    if not nuevas and not actualizaciones:
-        return ""
-
-    lineas = [
-        "🔍 *Propuesta de decisiones* (revisar y aplicar a mano en Notion — nada se escribió automáticamente):"
-    ]
-
-    if nuevas:
-        lineas.append("\n_Nuevas:_")
-        for n in nuevas:
-            lineas.append(f"- {n['decision']} ({n.get('origen_reunion', 'sin origen')})")
-
-    if actualizaciones:
-        lineas.append("\n_Actualizaciones sugeridas:_")
-        for a in actualizaciones:
-            lineas.append(f"- {a['decision_existente']} → {a['estado_nuevo']} — {a['razon_cambio']}")
-
-    return "\n".join(lineas)
-
-
-def ejecutar_reconciliacion(cfg: dict) -> str:
+def ejecutar_reconciliacion(cfg: dict, client: NotionClient = None) -> dict:
     """
-    Punto de entrada usado por 05_weekly_digest.py. Devuelve el texto
-    (posiblemente vacío) para agregar al mensaje semanal de Telegram.
+    Punto de entrada usado por 05_weekly_digest.py (y standalone vía main()).
+    Devuelve la propuesta como dict ({"nuevas": [...], "actualizaciones": [...]}),
+    lista para pasarle a 07_aplicar_decisiones.py::aplicar_propuesta().
     Siempre guarda un JSON de propuesta en data/staging/, incluso si ambas
     listas terminan vacías — es el artefacto de auditoría de esta ejecución.
     """
-    client = NotionClient()
+    client = client or NotionClient()
 
     nuevas_candidatas = gather_decisiones_recientes(ROOT / cfg["paths"]["processed_dir"])
 
@@ -211,13 +185,19 @@ def ejecutar_reconciliacion(cfg: dict) -> str:
         propuesta = call_claude(prompt, cfg)
 
     guardar_propuesta(propuesta, ROOT / cfg["paths"]["staging_dir"])
-    return formatear_para_telegram(propuesta)
+    return propuesta
 
 
 def main():
     cfg = load_config()
-    texto = ejecutar_reconciliacion(cfg)
-    print(texto if texto else "Sin propuestas de decisiones esta semana.")
+    propuesta = ejecutar_reconciliacion(cfg)
+    nuevas = propuesta.get("nuevas", [])
+    actualizaciones = propuesta.get("actualizaciones", [])
+    if not nuevas and not actualizaciones:
+        print("Sin propuestas de decisiones esta semana.")
+        return
+    print(f"{len(nuevas)} decisión(es) nueva(s), {len(actualizaciones)} actualización(es) propuesta(s).")
+    print("Para aplicarlas a Notion: python scripts/07_aplicar_decisiones.py")
 
 
 if __name__ == "__main__":

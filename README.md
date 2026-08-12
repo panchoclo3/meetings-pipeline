@@ -8,12 +8,17 @@ breve → escritura en Notion.
 
 **Probado de punta a punta con audio real**, en Windows con Python 3.12,
 `whisperx` 3.8.6 y `ffmpeg` 9.0: transcripción (paso 1) → extracción (paso 2)
-→ staging (paso 3) → push a Notion (paso 4) → resumen semanal por Telegram
-(paso 5) → propuesta de reconciliación de decisiones (paso 6). Las tres bases
-de Notion (Reuniones, Tareas, Decisiones) están compartidas con la
-integración y sus IDs viven en `.env` (ver
-[Setup de Notion](#3-setup-de-notion)). Detalle de qué se verificó en cada
-corrida: [Qué se probó y qué no](#qué-se-probó-y-qué-no).
+→ staging (paso 3) → push a Notion (paso 4) → resumen semanal en Notion
+(paso 5) → propuesta de reconciliación de decisiones (paso 6) → aplicación
+automática de esa propuesta en Notion (paso 7). Las tres bases de Notion
+(Reuniones, Tareas, Decisiones) están compartidas con la integración y sus
+IDs viven en `.env` (ver [Setup de Notion](#3-setup-de-notion)). Detalle de
+qué se verificó en cada corrida: [Qué se probó y qué no](#qué-se-probó-y-qué-no).
+
+> Este pipeline no usa Telegram — el resumen semanal se escribe únicamente
+> en una subpágina de Notion. Si ves referencias a Telegram en secciones
+> como "Qué se probó y qué no" más abajo, son historial de una versión
+> anterior; el código actual ya no lo usa.
 
 ## Filosofía del pipeline (por qué está diseñado así)
 
@@ -43,8 +48,9 @@ ventana-celeste-pipeline/
 │   ├── 02_extract.py                     ← Paso 2: extracción estructurada (Claude API)
 │   ├── 03_staging_review.py              ← Paso 3: genera resumen .md para revisión
 │   ├── 04_push_notion.py                 ← Paso 4: escribe en Notion (API directa)
-│   ├── 05_weekly_digest.py               ← Paso 5 (independiente): resumen semanal por Telegram
+│   ├── 05_weekly_digest.py               ← Paso 5 (independiente): resumen semanal en Notion
 │   ├── 06_decisiones_reconciliacion.py   ← Paso 6 (independiente): propuesta de decisiones, solo lectura de Notion
+│   ├── 07_aplicar_decisiones.py          ← Paso 7 (independiente): aplica la propuesta del paso 6 en Notion
 │   ├── pipeline.py                       ← orquestador: corre pasos 1→2→3 y se detiene
 │   ├── notion_client.py                  ← wrapper de la API REST de Notion
 │   └── schema.py                          ← validación JSON Schema de la extracción
@@ -134,12 +140,30 @@ configuración real ya cargada en este repo, a modo de referencia:
 | Propiedad | Tipo | Nombre real en `config.yaml` |
 |---|---|---|
 | Título | Title | `Nombre` |
-| Proyecto | Select | `Proyecto` |
-| Responsable (IA) | Select — **distinto** del campo `Responsable` tipo *person* que ya usa el equipo; no lo pisamos | `Responsable (IA)` |
+| Responsable | **Person** (usuarios reales de Notion, admite varios) | `Responsable` |
+| Prototipo | Select | `Prototipo` |
+| Area | Select | `Area` |
 | Prioridad | Select (Alta, Media, Baja — con mayúscula inicial) | `Prioridad` |
 | Estado | **Status** (Not started, In progress, Done — en inglés) | `Estado` |
+| Fecha | Date | `Fecha` |
 | Reunión origen | Relation → apunta a "Reuniones" | `Reunion origen` (sin tilde) |
+| Notas | Text | `Notas` |
 
+> Esta base ya no tiene campo `Proyecto` — todas sus tareas son de Ventana
+> Celeste por definición. El campo `Responsable (IA)` (select de un solo
+> valor, "Francisco"/"Gonzalo"/"Patricio") queda **deprecado**: el pipeline
+> ya no lo usa ni lo borra, sigue existiendo en Notion como historial.
+>
+> ⚠️ **`Responsable` es tipo `person`, no `select`** — Notion exige el user
+> ID real de cada persona, no un nombre en texto. El pipeline extrae nombres
+> en texto libre del audio y los resuelve vía
+> `scripts/04_push_notion.py::resolver_persona()`, que primero consulta
+> `config.yaml → notion.resolucion_personas` (mapeo editado a mano) y, si
+> falta, intenta resolverlo automáticamente contra `/v1/users`. Los nombres
+> que no se logran resolver (típico de invitados sin acceso completo a la
+> integración) quedan anotados en el campo `Notas` en vez de perderse — ver
+> [Resolución de personas](#resolución-de-personas-responsable).
+>
 > ⚠️ **`Estado` en Tareas es tipo `status`, no `select`** — Notion no deja
 > crear opciones de `status` nuevas vía API, así que el pipeline mapea
 > `"Pendiente"` → `"Not started"` en código
@@ -147,8 +171,10 @@ configuración real ya cargada en este repo, a modo de referencia:
 > opciones de esa base, actualiza también ese diccionario.
 > `Estado` en Reuniones, en cambio, sí es `select` — no necesita mapeo.
 
-**Base "Decisiones"** (el pipeline solo la **lee**, nunca escribe en ella —
-ver [Paso 6](#paso-6-independiente-reconciliación-de-decisiones-solo-propuesta)):
+**Base "Decisiones"** — el pipeline la lee en el paso 6 y escribe en ella
+automáticamente en el paso 7 (ver
+[Paso 6](#paso-6-independiente-reconciliación-de-decisiones-propuesta) y
+[Paso 7](#paso-7-independiente-aplicación-automática-de-decisiones)):
 | Propiedad | Tipo | Nombre real en `config.yaml` |
 |---|---|---|
 | Decision | Title | `Decision` |
@@ -186,35 +212,54 @@ NOTION_DECISIONES_DATABASE_ID=xxxxx
 
 Para el paso 5 (resumen semanal) también necesitas compartir con la
 integración la página "Ventana Celeste" (o la que configures como
-`telegram.pagina_padre`) — el pipeline busca esa página por nombre para
-crear debajo la subpágina "Resúmenes semanales" la primera vez que corre.
+`resumen_semanal.pagina_padre`) — el pipeline busca esa página por nombre
+para crear debajo la subpágina "Resúmenes semanales" la primera vez que
+corre. Si quieres otros nombres, ajusta `resumen_semanal.pagina_padre` y
+`resumen_semanal.pagina_resumenes` en `config.yaml` (por defecto: "Ventana
+Celeste" → "Resúmenes semanales").
 
-### 4. Setup de Telegram (opcional — solo para el paso 5)
+### 4. Ajustar vocabulario controlado
 
-1. Habla con [@BotFather](https://t.me/BotFather) en Telegram → `/newbot` →
-   sigue las instrucciones → copia el token que te da (formato
-   `123456:ABC-...`) en `TELEGRAM_BOT_TOKEN`.
-2. Mándale cualquier mensaje a tu bot recién creado (si no le escribís primero,
-   Telegram no le deja enviarte mensajes a vos).
-3. Visita `https://api.telegram.org/bot<TU_TOKEN>/getUpdates` en el navegador
-   y busca `"chat":{"id": ...}` en la respuesta — ese número es tu
-   `TELEGRAM_CHAT_ID`.
-4. Si quieres otros nombres de página para el resumen semanal, ajusta
-   `telegram.pagina_padre` y `telegram.pagina_resumenes` en `config.yaml`
-   (por defecto: "Ventana Celeste" → "Resúmenes semanales").
+Edita `config/config.yaml` → `proyectos`, `tags_permitidos` y
+`personas_permitidas` con tus valores reales (ya viene pre-cargado con los
+del proyecto Ventana Celeste como ejemplo). Estas listas se inyectan
+automáticamente en el prompt de extracción.
 
-### 5. Ajustar vocabulario controlado
+### Resolución de personas (`Responsable`)
 
-Edita `config/config.yaml` → `proyectos` y `tags_permitidos` con tus valores
-reales (ya viene pre-cargado con los del proyecto Ventana Celeste como ejemplo).
-Estas listas se inyectan automáticamente en el prompt de extracción.
+El campo `Responsable` de la base Tareas es tipo *person* — Notion exige el
+user ID real de cada persona, no su nombre en texto. El pipeline extrae
+nombres en texto libre del audio (de la lista `personas_permitidas`) y
+necesita mapearlos a IDs antes de escribir. Ese mapeo vive en
+`config.yaml → notion.resolucion_personas`:
+
+```yaml
+notion:
+  resolucion_personas:
+    Francisco: "24bd872b-594c-81d6-bccc-0002620e0c90"
+    Alessio: null
+    Gonzalo: null
+```
+
+Cómo conseguir un user ID: en Notion, ve a **Settings → People**, abre el
+perfil de la persona y copia el ID de la URL. Si la persona es invitada
+("guest") con acceso limitado a páginas específicas, es posible que
+`/v1/users` (lo que usa el pipeline como respaldo automático) no la
+devuelva — en ese caso el ID a mano en `resolucion_personas` es la única vía.
+
+Cuando un nombre extraído no tiene ID (ni en `resolucion_personas` ni vía
+API), el pipeline **no** lo descarta silenciosamente: deja el campo
+`Responsable` sin esa persona, anota `[Responsable sin resolver: "Nombre"]`
+en el campo `Notas` de la tarea, y lo imprime como advertencia al correr
+`04_push_notion.py`. `05_weekly_digest.py` además agrega al resumen semanal
+en Notion cuántas tareas siguen con un responsable sin resolver.
 
 ## Uso
 
-> Los seis pasos fueron probados de punta a punta con audio real (incluyendo
-> Notion y Telegram reales) y funcionan tal como se describe abajo. Detalle
-> de qué se cubrió exactamente en esa corrida:
-> [Qué se probó y qué no](#qué-se-probó-y-qué-no).
+> Los pasos 1-6 fueron probados de punta a punta con audio y Notion reales
+> (ver detalle en [Qué se probó y qué no](#qué-se-probó-y-qué-no); esa
+> corrida es anterior a que se sacara Telegram del pipeline y se agregara el
+> paso 7 — su contenido histórico usa nombres de campos ya deprecados).
 
 **Flujo recomendado (orquestado, se detiene antes de escribir en Notion):**
 
@@ -237,10 +282,10 @@ python scripts/03_staging_review.py data/staging/<archivo_generado>.json
 python scripts/04_push_notion.py data/staging/<archivo_generado>.json
 ```
 
-### Paso 5 (independiente) — Resumen semanal por Telegram
+### Paso 5 (independiente) — Resumen semanal en Notion
 
-No depende de audio ni de WhisperX — solo hace llamadas HTTP a Notion, Claude
-y Telegram, así que se puede correr desde un cron o tarea programada sin el
+No depende de audio ni de WhisperX — solo hace llamadas HTTP a Notion y
+Claude, así que se puede correr desde un cron o tarea programada sin el
 resto del entorno de transcripción instalado:
 
 ```bash
@@ -248,16 +293,13 @@ python scripts/05_weekly_digest.py
 ```
 
 Qué hace: junta las reuniones de los últimos 7 días desde la base
-"Reuniones", les pide a Claude un resumen en texto plano apto para Telegram
-(sin tablas ni encabezados grandes — solo `*negrita*`/`_cursiva_`), lo manda
-al chat configurado, y lo agrega también como bloque nuevo al final de la
-página "Resúmenes semanales" en Notion (la crea si no existe todavía).
+"Reuniones", les pide a Claude un resumen en texto plano, corre la
+reconciliación de decisiones (paso 6) y aplica esa propuesta automáticamente
+en Notion (paso 7), y agrega todo — resumen + recuento de qué se creó o
+actualizó en Decisiones — como bloque nuevo al final de la página "Resúmenes
+semanales" en Notion (la crea si no existe todavía).
 
-Si `scripts/06_decisiones_reconciliacion.py` está disponible, este paso
-importa su función `ejecutar_reconciliacion()` y agrega la propuesta de
-decisiones al **mismo** mensaje de Telegram — no son dos mensajes separados.
-
-### Paso 6 (independiente) — Reconciliación de decisiones (solo propuesta)
+### Paso 6 (independiente) — Reconciliación de decisiones (propuesta)
 
 ```bash
 python scripts/06_decisiones_reconciliacion.py
@@ -265,21 +307,42 @@ python scripts/06_decisiones_reconciliacion.py
 
 Compara las decisiones extraídas esta semana (leyendo `data/processed/*.json`)
 contra la base real "Decisiones" en Notion, y le pide a Claude que proponga:
-qué decisiones son genuinamente nuevas, y qué decisiones existentes podrían
-necesitar un cambio de estado según lo discutido esta semana.
+qué decisiones son genuinamente nuevas (con tema, razón, prototipo y estado
+inicial sugeridos), y qué decisiones existentes podrían necesitar un cambio
+de estado según lo discutido esta semana.
 
-**Este script nunca crea ni modifica páginas en la base "Decisiones"** —
-las decisiones de proyecto son datos sensibles y este pipeline no escribe
-sobre ellos sin confirmación humana explícita (ver
-[Filosofía del pipeline](#filosofía-del-pipeline-por-qué-está-diseñado-así)).
-En su lugar:
-- Guarda la propuesta completa en `data/staging/decisiones_propuesta_<fecha>.json`.
-- Cuando se corre como parte del paso 5, agrega la propuesta al mensaje de
-  Telegram como texto plano con formato de lista.
+Este script sigue sin escribir en la base "Decisiones" — solo compara y
+guarda la propuesta completa en
+`data/staging/decisiones_propuesta_<fecha>.json`. La escritura real la hace
+el paso 7, ya sea automáticamente desde `05_weekly_digest.py` o corriendo
+`07_aplicar_decisiones.py` a mano sobre ese JSON.
 
-La aplicación real de los cambios queda para que la revises a mano en Notion,
-o para un futuro script de aplicación separado que lea ese JSON (no incluido
-todavía a propósito).
+### Paso 7 (independiente) — Aplicación automática de decisiones
+
+```bash
+python scripts/07_aplicar_decisiones.py
+# o, sobre una propuesta específica en vez de la más reciente:
+python scripts/07_aplicar_decisiones.py data/staging/decisiones_propuesta_2026-08-12.json
+```
+
+Lee una propuesta generada por el paso 6 y la aplica en la base real
+"Decisiones": crea una página por cada decisión nueva (con Decision, Tema,
+Razon, Prototipo, Estado y Fecha completos, y el origen + razón repetidos en
+el cuerpo de la página — a diferencia de decisiones cargadas a mano, que
+suelen quedar con la página en blanco), y actualiza el Estado de las
+decisiones existentes marcadas para actualización, dejando además un bloque
+en el cuerpo de esa página con la fecha y la razón del cambio.
+
+Si algo falla a mitad de camino, **no** se pierde ni se duplica nada: el
+JSON de staging queda reescrito solo con lo que no se pudo aplicar, listo
+para reintentar corriendo el script de nuevo.
+
+> Esta es la única escritura automática (sin revisión humana previa) de
+> este pipeline — el resto del flujo (Tareas, Reuniones) también escribe
+> solo, pero pasa primero por el punto de control del paso 3. Las páginas
+> que este script crea o modifica quedan marcadas en su contenido como
+> generadas por el pipeline, para poder distinguirlas de una carga manual
+> si algo se ve raro.
 
 ## Qué revisar en el paso de staging
 

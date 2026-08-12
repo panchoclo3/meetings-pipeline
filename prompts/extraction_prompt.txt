@@ -10,12 +10,15 @@ VOCABULARIO DE TAGS PERMITIDOS (usa solo tags de esta lista en "tags_sugeridos";
 TIPOS DE REUNIÓN VÁLIDOS (usa exactamente uno en "tipo_reunion"):
 {tipos_lista}
 
+VOCABULARIO DE PERSONAS PERMITIDAS (usa solo nombres de esta lista en "responsable" de cada tarea; si la transcripción menciona a alguien que no está en esta lista, no lo inventes ni lo fuerces al más parecido — omítelo y dejá constancia en "advertencias_extraccion"):
+{personas_lista}
+
 INSTRUCCIONES DE EXTRACCIÓN:
 
 1. "resumen_ejecutivo": 3-5 líneas máximo, para lectura rápida.
 2. "resumen_detallado": varios párrafos en formato markdown, con el contexto completo de lo discutido.
 3. "decisiones": solo decisiones reales (no ideas mencionadas de paso). Marca "estado" como "tentativa" si el lenguaje en la transcripción sugiere que aún no está confirmada (ej: "creo que deberíamos...", "podríamos considerar...").
-4. "tareas": extrae solo compromisos de acción concretos. Si no queda claro quién es responsable, usa "responsable": null y agrega una nota en "advertencias_extraccion". Marca "confianza": "baja" si la tarea es ambigua.
+4. "tareas": extrae solo compromisos de acción concretos. "responsable" es SIEMPRE un array: puede tener cero nombres (si no queda claro quién es responsable — usa [] y agrega una nota en "advertencias_extraccion"), uno, o varios (si la tarea se le asigna a más de una persona, incluye a todas). Marca "confianza": "baja" si la tarea es ambigua.
 5. "ideas": incluye tanto ideas propuestas como descartadas. Si fue descartada, completa "razon_descarte"; si no, usa null.
 6. "preguntas_abiertas": preguntas que quedaron sin responder en la conversación.
 7. "proximos_pasos": acciones acordadas para después de esta reunión (puede haber superposición con "tareas", está bien).
@@ -44,7 +47,7 @@ FORMATO DE SALIDA — responde EXACTAMENTE con este esquema (sin texto fuera del
     {{"decision": "string", "razon": "string", "estado": "confirmada | tentativa", "cita_transcripcion": "string o null"}}
   ],
   "tareas": [
-    {{"titulo": "string", "responsable": "string o null", "proyecto": "string", "prioridad": "alta | media | baja | null", "confianza": "alta | media | baja"}}
+    {{"titulo": "string", "responsable": ["string"], "prioridad": "alta | media | baja | null", "confianza": "alta | media | baja"}}
   ],
   "ideas": [
     {{"idea": "string", "contexto": "string", "estado": "propuesta | descartada | en_evaluacion", "razon_descarte": "string o null"}}
