@@ -51,7 +51,7 @@ def render_markdown(data: dict) -> str:
         for w in warnings:
             lines.append(f"- {w}")
         for t in low_confidence_tasks:
-            lines.append(f"- Tarea de baja confianza: \"{t['titulo']}\" (responsable: {t['responsable'] or 'sin asignar'})")
+            lines.append(f"- Tarea de baja confianza: \"{t['titulo']}\" (responsable: {', '.join(t['responsable']) or 'sin asignar'})")
         lines.append("")
 
     lines.append("## Metadata")
@@ -80,7 +80,7 @@ def render_markdown(data: dict) -> str:
         lines.append("## Tareas")
         for t in data["tareas"]:
             conf_tag = {"alta": "", "media": " (confianza media)", "baja": " ⚠️ (confianza baja)"}[t["confianza"]]
-            lines.append(f"- [ ] {t['titulo']} — *{t['responsable'] or 'sin asignar'}*{conf_tag}")
+            lines.append(f"- [ ] {t['titulo']} — *{', '.join(t['responsable']) or 'sin asignar'}*{conf_tag}")
         lines.append("")
 
     if data["ideas"]:

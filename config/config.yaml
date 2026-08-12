@@ -11,6 +11,10 @@
 # (ej: "ergonomia" vs "ergonomía" vs "diseño ergonómico"). Edita estas listas
 # cuando necesites un proyecto o tag nuevo; el pipeline las usa como referencia
 # obligatoria en el prompt de extracción.
+#
+# Nota: "proyectos" solo aplica a la base Reuniones (ver propiedades_reuniones
+# más abajo). La base Tareas ya no tiene campo Proyecto — todas sus tareas
+# son de Ventana Celeste por definición.
 # -----------------------------------------------------------------------------
 proyectos:
   - "Ventana Celeste"
@@ -43,11 +47,24 @@ tipos_reunion:
   - "brainstorming"
   - "espontanea"
 
+# Vocabulario controlado de personas — usado como referencia obligatoria en
+# el prompt de extracción para el campo "responsable" de cada tarea (acepta
+# cero, uno o más nombres de esta lista). Debe reflejar los mismos nombres
+# que se usan en Reuniones.Personas. Edita esta lista si se suma o se va
+# alguien del equipo; también actualiza notion.resolucion_personas más abajo.
+personas_permitidas:
+  - "Francisco"
+  - "Alessio"
+  - "Gonzalo"
+  - "Valeria"
+  - "Fernanda"
+  - "Patricio"
+
 # -----------------------------------------------------------------------------
 # Diarización / ASR — WhisperX (motor gratuito, local)
 # -----------------------------------------------------------------------------
 whisperx:
-  model: "large-v3"        # calidad alta; usar "medium" si el equipo es lento
+  model: "large-v3-turbo"        # MODIFICADO por rendiemiento de cpu Acer Aspire 5
   language: "es"
   device: "cpu"             # cambiar a "cuda" si hay GPU NVIDIA disponible
   compute_type: "int8"      # "int8" en CPU, "float16" en GPU
@@ -60,7 +77,7 @@ whisperx:
 # -----------------------------------------------------------------------------
 claude:
   model: "claude-sonnet-4-6"
-  max_tokens: 4096
+  max_tokens: 16000
   temperature: 0.2   # baja: queremos extracción fiel, no creatividad
 
 # -----------------------------------------------------------------------------
@@ -68,7 +85,7 @@ claude:
 # -----------------------------------------------------------------------------
 # Los IDs reales NO se guardan acá (este archivo se versiona en git) — cada
 # clave apunta al nombre de la variable de entorno en .env que sí los tiene,
-# mismo patrón que whisperx.hf_token_env / telegram.bot_token_env más abajo.
+# mismo patrón que whisperx.hf_token_env más abajo.
 notion:
   reuniones_database_id_env: "NOTION_REUNIONES_DATABASE_ID"  # página "Reuniones"
   tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"        # página "Tareas" (Kanban)
@@ -84,16 +101,54 @@ notion:
     estado: "Estado"
   propiedades_tareas:
     titulo: "Nombre"
-    proyecto: "Proyecto"
-    # "Responsable" es un campo person (usuarios reales de Notion) ya usado por
-    # el equipo — no lo tocamos. "Responsable (IA)" es un select aparte,
-    # creado para que el pipeline asigne su mejor estimación sin pisar el campo real.
-    responsable: "Responsable (IA)"
+    # Campo "Responsable" (person, tipo usuario real de Notion). Puede tener
+    # más de una persona asignada — es un array de user IDs, no un select
+    # único. El campo "Responsable (IA)" (select) queda deprecado: ya no se
+    # usa desde el pipeline.
+    responsable: "Responsable"
+    prototipo: "Prototipo"
     prioridad: "Prioridad"
     estado: "Estado"
+    fecha: "Fecha"
     reunion_origen: "Reunion origen"
-  # Base "Decisiones" — solo lectura desde el pipeline (ver scripts/06_decisiones_reconciliacion.py).
-  # El pipeline NUNCA escribe aquí automáticamente; solo propone cambios.
+    # Campo de texto libre en la base Tareas. Se usa para dejar constancia
+    # cuando un nombre extraído no pudo resolverse a un user ID de Notion
+    # (ver notion.resolucion_personas y scripts/04_push_notion.py::resolver_persona).
+    # Confirmado contra el schema real vía API: existe como propiedad "text".
+    notas: "Notas"
+  # Mapeo nombre → user ID real de Notion, usado para resolver el campo
+  # "Responsable" (person) a partir de los nombres en texto libre que
+  # extrae el pipeline del audio. Deja `null` si no tienes el ID — el
+  # pipeline intentará resolverlo vía API (/v1/users) como respaldo
+  # automático, y si tampoco lo encuentra ahí (típico de invitados sin
+  # acceso completo a la integración), lo dejará como no resuelto sin fallar.
+  #
+  # IDs obtenidos el 2026-08-12 vía búsqueda de usuarios de la API de Notion
+  # (query_type=user) y, donde fue posible, cruzados contra el campo
+  # "Responsable" de tareas ya existentes en la base Kanban real:
+  # - Francisco: confirmado por /v1/users (miembro completo del workspace).
+  # - Gonzalo: confirmado dos veces — búsqueda de usuario Y una tarea real
+  #   cuyo título menciona "de Gonzalo" tiene este mismo ID asignado.
+  # - Patricio, Alessio: confirmados por búsqueda de usuario (nombre+email
+  #   coinciden) y aparecen usados en tareas reales de la base, pero sin una
+  #   pista textual tan directa como la de Gonzalo — confianza alta, no
+  #   verificación cruzada perfecta.
+  # - Valeria: encontrada por búsqueda de usuario (nombre "VALERIA LÓPEZ" +
+  #   email uc.cl), pero este ID NO aparece asignado a ninguna tarea
+  #   existente en Notion — no hay forma de cruzarlo. Confianza media.
+  # - Fernanda: en Notion aparece como "Fer Rojas" (no "Fernanda"), por eso
+  #   la búsqueda inicial por "Fernanda" no la encontró. Confirmado por el
+  #   usuario y verificado vía API buscando "Fer Rojas": mismo ID que ya
+  #   aparecía en la tarea real "Prueba tecnica" junto a Patricio.
+  resolucion_personas:
+    Francisco: "24bd872b-594c-81d6-bccc-0002620e0c90"
+    Alessio: "1acd872b-594c-8103-8eca-0002cb3d2129"
+    Gonzalo: "ade4963a-69af-4d79-8250-d742bb968fba"
+    Valeria: "bb5abeec-8ed1-456f-aeba-3fe6e1ac6516"
+    Fernanda: "39dd872b-594c-810a-a3d8-00028749fa09"
+    Patricio: "3a3d872b-594c-816b-bd43-000294d0fcba"
+  # Base "Decisiones" — el pipeline la lee (comparación en el paso 6) y
+  # escribe en ella automáticamente en el paso 7 (scripts/07_aplicar_decisiones.py).
   decisiones_database_id_env: "NOTION_DECISIONES_DATABASE_ID"
   propiedades_decisiones:
     decision: "Decision"
@@ -104,11 +159,10 @@ notion:
     fecha: "Fecha"
 
 # -----------------------------------------------------------------------------
-# Telegram — resumen semanal (scripts/05_weekly_digest.py)
+# Resumen semanal (scripts/05_weekly_digest.py) — se escribe como bloque
+# nuevo al final de una subpágina de Notion, nunca modifica lo ya escrito.
 # -----------------------------------------------------------------------------
-telegram:
-  bot_token_env: "TELEGRAM_BOT_TOKEN"  # nombre de la variable de entorno con el token del bot
-  chat_id_env: "TELEGRAM_CHAT_ID"      # nombre de la variable de entorno con el chat_id destino
+resumen_semanal:
   pagina_padre: "Ventana Celeste"       # página existente bajo la cual vive el resumen
   pagina_resumenes: "Resúmenes semanales"  # subpágina donde se acumulan los resúmenes; se crea si no existe
 

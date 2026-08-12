@@ -70,11 +70,10 @@ EXTRACTION_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["titulo", "responsable", "proyecto", "prioridad", "confianza"],
+                "required": ["titulo", "responsable", "prioridad", "confianza"],
                 "properties": {
                     "titulo": {"type": "string"},
-                    "responsable": {"type": ["string", "null"]},
-                    "proyecto": {"type": "string"},
+                    "responsable": {"type": "array", "items": {"type": "string"}},
                     "prioridad": {
                         "type": ["string", "null"],
                         "enum": ["alta", "media", "baja", None],

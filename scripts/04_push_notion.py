@@ -48,6 +48,7 @@ from notion_client import (  # noqa: E402
     prop_multi_select,
     prop_date,
     prop_relation,
+    prop_people,
     block_heading,
     block_paragraph,
     block_bulleted_item,
@@ -74,6 +75,38 @@ def capitalizar_prioridad(prioridad: str) -> str:
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def fetch_api_users_by_name(client: NotionClient) -> dict:
+    """
+    Respaldo automático para resolver nombre -> user ID cuando
+    config.yaml -> notion.resolucion_personas no tiene el ID a mano.
+    Nota: /v1/users solo devuelve miembros con cuenta completa del
+    workspace — invitados con acceso limitado no aparecen acá aunque
+    tengan tareas asignadas en Notion (ver README.md).
+    """
+    try:
+        users = client.list_users()
+    except RuntimeError as e:
+        print(f"  ⚠️  No se pudo consultar /v1/users para resolver personas: {e}")
+        return {}
+    return {u["name"]: u["id"] for u in users if u.get("name")}
+
+
+def resolver_persona(nombre: str, cfg: dict, api_users_by_name: dict):
+    """
+    Resuelve un nombre en texto libre al user ID real de Notion que
+    necesita el campo "Responsable" (tipo person). Prioridad:
+    1. config.yaml -> notion.resolucion_personas (mapeo editado a mano).
+    2. Búsqueda por nombre entre los usuarios que devuelve la API.
+    Devuelve None si ninguna de las dos fuentes lo resuelve — el llamador
+    decide qué hacer (ver build_tarea_properties).
+    """
+    mapeo = (cfg["notion"].get("resolucion_personas") or {})
+    user_id = mapeo.get(nombre)
+    if user_id:
+        return user_id
+    return api_users_by_name.get(nombre)
 
 
 def build_reunion_properties(data: dict, cfg: dict) -> dict:
@@ -133,23 +166,47 @@ def build_reunion_content_blocks(data: dict) -> list:
     if data["tareas"]:
         blocks.append(block_heading("Tareas (ver también base Tareas)"))
         for t in data["tareas"]:
-            blocks.append(block_todo(f"{t['titulo']} — {t['responsable'] or 'sin asignar'}"))
+            blocks.append(block_todo(f"{t['titulo']} — {', '.join(t['responsable']) or 'sin asignar'}"))
 
     return blocks
 
 
-def build_tarea_properties(tarea: dict, reunion_page_id: str, cfg: dict) -> dict:
+def build_tarea_properties(
+    tarea: dict, reunion_page_id: str, cfg: dict, api_users_by_name: dict
+) -> tuple:
+    """
+    Devuelve (props, nombres_sin_resolver). "Responsable" es un campo person
+    de Notion — exige user IDs reales, no nombres en texto. Cada nombre que
+    la extracción encontró se resuelve vía resolver_persona(); los que no se
+    logran resolver NO se pierden: quedan como advertencia en "Notas" para
+    completar a mano, en vez de fallar la escritura o el campo quedar vacío
+    sin dejar rastro.
+    """
     p = cfg["notion"]["propiedades_tareas"]
     props = {
         p["titulo"]: prop_title(tarea["titulo"]),
-        p["proyecto"]: prop_select(tarea["proyecto"]),
         p["prioridad"]: prop_select(capitalizar_prioridad(tarea["prioridad"])),
         p["estado"]: prop_status(ESTADO_TAREA_A_STATUS["Pendiente"]),
         p["reunion_origen"]: prop_relation([reunion_page_id]),
     }
-    if tarea["responsable"]:
-        props[p["responsable"]] = prop_select(tarea["responsable"])
-    return props
+
+    resueltos = []
+    no_resueltos = []
+    for nombre in tarea["responsable"]:
+        user_id = resolver_persona(nombre, cfg, api_users_by_name)
+        if user_id:
+            resueltos.append(user_id)
+        else:
+            no_resueltos.append(nombre)
+
+    if resueltos:
+        props[p["responsable"]] = prop_people(resueltos)
+
+    if no_resueltos:
+        nota = " ".join(f'[Responsable sin resolver: "{n}"]' for n in no_resueltos)
+        props[p["notas"]] = prop_rich_text(nota)
+
+    return props, no_resueltos
 
 
 def main():
@@ -171,6 +228,7 @@ def main():
     tareas_db = get_database_id(cfg["notion"], "tareas")
 
     client = NotionClient()
+    api_users_by_name = fetch_api_users_by_name(client)
 
     print("Creando página de reunión en Notion...")
     reunion_props = build_reunion_properties(data, cfg)
@@ -180,14 +238,35 @@ def main():
     print(f"  ✅ Página creada: {reunion_page.get('url', reunion_page_id)}")
 
     task_pages = []
+    tareas_sin_resolver = []
     for tarea in data["tareas"]:
         print(f"  Creando tarea: {tarea['titulo']}...")
-        tarea_props = build_tarea_properties(tarea, reunion_page_id, cfg)
+        tarea_props, no_resueltos = build_tarea_properties(
+            tarea, reunion_page_id, cfg, api_users_by_name
+        )
+        if no_resueltos:
+            print(
+                f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
+                f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
+            )
+            tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
         tarea_page = client.create_page(tareas_db, tarea_props)
         task_pages.append(tarea_page.get("url", tarea_page["id"]))
 
     if task_pages:
         print(f"  ✅ {len(task_pages)} tarea(s) creada(s).")
+
+    if tareas_sin_resolver:
+        print(
+            f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
+            "con al menos un responsable sin resolver:"
+        )
+        for titulo, nombres in tareas_sin_resolver:
+            print(f"   - \"{titulo}\": {', '.join(nombres)}")
+        print(
+            "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
+            "ID reales, o asígnalos a mano en Notion."
+        )
 
     # Mover de staging a processed para no reprocesar por accidente
     processed_dir = ROOT / cfg["paths"]["processed_dir"]
