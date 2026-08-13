@@ -100,7 +100,7 @@ def transcribe_and_diarize(audio_path: Path, cfg: dict) -> dict:
     return result
 
 
-def collect_speaker_samples(segments: list, max_samples: int = 2) -> dict:
+def collect_speaker_samples(segments: list, max_samples: int = 4) -> dict:
     """Junta 1-2 frases de ejemplo por cada SPEAKER_XX para mostrarlas al usuario."""
     samples = {}
     for seg in segments:
