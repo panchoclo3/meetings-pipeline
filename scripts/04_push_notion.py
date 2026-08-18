@@ -27,6 +27,7 @@ if sys.platform == "win32":
 
 import json
 import shutil
+import time
 import yaml
 from pathlib import Path
 from datetime import datetime, date
@@ -54,6 +55,7 @@ from notion_client import (  # noqa: E402
     block_bulleted_item,
     block_todo,
 )
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 # La base "Tareas" (Kanban) usa un campo de tipo "status" para Estado, no
 # "select" — Notion no deja crear opciones de status nuevas vía API, así que
@@ -219,67 +221,71 @@ def main():
         print(f"Error: no existe el archivo {staging_path}")
         sys.exit(1)
 
-    cfg = load_config()
+    with logged_run("04_push_notion", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
 
-    with open(staging_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        cfg = load_config()
 
-    reuniones_db = get_database_id(cfg["notion"], "reuniones")
-    tareas_db = get_database_id(cfg["notion"], "tareas")
+        with open(staging_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-    client = NotionClient()
-    api_users_by_name = fetch_api_users_by_name(client)
+        reuniones_db = get_database_id(cfg["notion"], "reuniones")
+        tareas_db = get_database_id(cfg["notion"], "tareas")
 
-    print("Creando página de reunión en Notion...")
-    reunion_props = build_reunion_properties(data, cfg)
-    reunion_blocks = build_reunion_content_blocks(data)
-    reunion_page = client.create_page(reuniones_db, reunion_props, reunion_blocks)
-    reunion_page_id = reunion_page["id"]
-    print(f"  ✅ Página creada: {reunion_page.get('url', reunion_page_id)}")
+        client = NotionClient()
+        api_users_by_name = fetch_api_users_by_name(client)
 
-    task_pages = []
-    tareas_sin_resolver = []
-    for tarea in data["tareas"]:
-        print(f"  Creando tarea: {tarea['titulo']}...")
-        tarea_props, no_resueltos = build_tarea_properties(
-            tarea, reunion_page_id, cfg, api_users_by_name
-        )
-        if no_resueltos:
+        with Stage("Creando página de reunión en Notion"):
+            reunion_props = build_reunion_properties(data, cfg)
+            reunion_blocks = build_reunion_content_blocks(data)
+            reunion_page = client.create_page(reuniones_db, reunion_props, reunion_blocks)
+            reunion_page_id = reunion_page["id"]
+        print(f"  ✅ Página creada: {reunion_page.get('url', reunion_page_id)}")
+
+        task_pages = []
+        tareas_sin_resolver = []
+        n_tareas = len(data["tareas"])
+        with Stage(f"Creando {n_tareas} tarea(s) en Notion"):
+            for i, tarea in enumerate(data["tareas"], start=1):
+                print(f"  [{i}/{n_tareas}] Creando tarea: {tarea['titulo']}...")
+                tarea_props, no_resueltos = build_tarea_properties(
+                    tarea, reunion_page_id, cfg, api_users_by_name
+                )
+                if no_resueltos:
+                    print(
+                        f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
+                        f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
+                    )
+                    tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
+                tarea_page = client.create_page(tareas_db, tarea_props)
+                task_pages.append(tarea_page.get("url", tarea_page["id"]))
+
+        if tareas_sin_resolver:
             print(
-                f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
-                f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
+                f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
+                "con al menos un responsable sin resolver:"
             )
-            tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
-        tarea_page = client.create_page(tareas_db, tarea_props)
-        task_pages.append(tarea_page.get("url", tarea_page["id"]))
+            for titulo, nombres in tareas_sin_resolver:
+                print(f"   - \"{titulo}\": {', '.join(nombres)}")
+            print(
+                "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
+                "ID reales, o asígnalos a mano en Notion."
+            )
 
-    if task_pages:
-        print(f"  ✅ {len(task_pages)} tarea(s) creada(s).")
+        # Mover de staging a processed para no reprocesar por accidente
+        processed_dir = ROOT / cfg["paths"]["processed_dir"]
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        dest = processed_dir / staging_path.name
+        shutil.move(str(staging_path), str(dest))
 
-    if tareas_sin_resolver:
-        print(
-            f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
-            "con al menos un responsable sin resolver:"
-        )
-        for titulo, nombres in tareas_sin_resolver:
-            print(f"   - \"{titulo}\": {', '.join(nombres)}")
-        print(
-            "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
-            "ID reales, o asígnalos a mano en Notion."
-        )
+        md_path = staging_path.with_suffix(".md")
+        if md_path.exists():
+            shutil.move(str(md_path), str(processed_dir / md_path.name))
 
-    # Mover de staging a processed para no reprocesar por accidente
-    processed_dir = ROOT / cfg["paths"]["processed_dir"]
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    dest = processed_dir / staging_path.name
-    shutil.move(str(staging_path), str(dest))
-
-    md_path = staging_path.with_suffix(".md")
-    if md_path.exists():
-        shutil.move(str(md_path), str(processed_dir / md_path.name))
-
-    print(f"\n✅ Listo. Reunión procesada y movida a: {dest}")
-    print(f"   Fecha de procesamiento: {datetime.now().isoformat()}")
+        print(f"\n✅ Listo. Reunión procesada y movida a: {dest}")
+        print(f"   Tiempo total: {format_duration(time.monotonic() - inicio)}")
+        print(f"   Fecha de procesamiento: {datetime.now().isoformat()}")
 
 
 if __name__ == "__main__":

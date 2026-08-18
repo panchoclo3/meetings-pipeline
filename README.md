@@ -53,6 +53,7 @@ ventana-celeste-pipeline/
 │   ├── 07_aplicar_decisiones.py          ← Paso 7 (independiente): aplica la propuesta del paso 6 en Notion
 │   ├── pipeline.py                       ← orquestador: corre pasos 1→2→3 y se detiene
 │   ├── notion_client.py                  ← wrapper de la API REST de Notion
+│   ├── progress.py                       ← visibilidad de progreso/errores, usado por todos los pasos (ver abajo)
 │   └── schema.py                          ← validación JSON Schema de la extracción
 ├── data/
 │   ├── audio/                            ← coloca aquí tus grabaciones
@@ -343,6 +344,35 @@ para reintentar corriendo el script de nuevo.
 > que este script crea o modifica quedan marcadas en su contenido como
 > generadas por el pipeline, para poder distinguirlas de una carga manual
 > si algo se ve raro.
+
+## Visibilidad de progreso y errores
+
+Todos los scripts (`01` a `07`) usan `scripts/progress.py` para no dejarte
+mirando una consola congelada durante los pasos largos (transcripción,
+diarización, llamadas a Claude):
+
+- **Cada paso largo imprime cuándo empieza, un "latido" cada ~20s mientras
+  sigue corriendo** (con el tiempo transcurrido), **y cuándo termina** (con
+  el tiempo total) — así sabés que sigue vivo aunque la librería subyacente
+  (WhisperX, pyannote) no dé ninguna señal propia de progreso.
+- **Cada corrida escribe un log completo** en `data/logs/<script>_<fecha-hora>.log`
+  con todo lo que se imprimió en pantalla — útil si cerraste la terminal, se
+  perdió el scroll, o corriste algo en segundo plano y volvés horas después.
+- **Los errores no atrapados se reportan de forma clara**, con el paso en el
+  que ocurrieron y cuánto tardó antes de fallar, en vez de un traceback
+  crudo perdido en el buffer de la consola — el traceback completo igual
+  queda guardado en el log, por si necesitás depurarlo.
+
+Ejemplo de lo que ves ahora en un paso largo (antes no había nada entre el
+"Diarizando..." inicial y el resultado final, aunque tardara 45 minutos):
+
+```
+▶ [4/4] Diarizando — identificando hablantes (puede tardar varios minutos en CPU)...
+   … sigue en curso (20s transcurridos)
+   … sigue en curso (40s transcurridos)
+   … sigue en curso (1m 00s transcurridos)
+✅ [4/4] Diarizando — identificando hablantes (puede tardar varios minutos en CPU) — listo (1m 12s)
+```
 
 ## Qué revisar en el paso de staging
 

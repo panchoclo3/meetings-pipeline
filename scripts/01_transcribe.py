@@ -32,6 +32,7 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 import json
+import time
 import yaml
 from pathlib import Path
 from datetime import datetime
@@ -41,6 +42,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "config.yaml"
 
 load_dotenv(ROOT / ".env")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 
 def load_config():
@@ -53,6 +57,16 @@ def transcribe_and_diarize(audio_path: Path, cfg: dict) -> dict:
     Ejecuta WhisperX end-to-end: ASR + alineación + diarización.
     Devuelve una lista de segmentos con speaker, start, end, text.
     """
+    import warnings
+
+    # Advertencia no accionable: torchcodec no encuentra su DLL nativa en
+    # este entorno, pero whisperx/pyannote cae de vuelta a su decodificador
+    # de audio propio y sigue funcionando igual — no vale la pena que
+    # compita por atención con las líneas de progreso de abajo. Si en algún
+    # momento la carga de audio empieza a fallar de verdad, esta es la
+    # primera pista a revisar (arreglar la instalación de torchcodec/ffmpeg).
+    warnings.filterwarnings("ignore", message="torchcodec is not installed correctly.*")
+
     import whisperx
     import whisperx.diarize
     import torch
@@ -62,45 +76,45 @@ def transcribe_and_diarize(audio_path: Path, cfg: dict) -> dict:
     device = wx_cfg["device"]
     compute_type = wx_cfg["compute_type"]
 
-    print(f"[1/4] Cargando modelo Whisper ({wx_cfg['model']}) en {device}...")
-    model = whisperx.load_model(
-        wx_cfg["model"], device=device, compute_type=compute_type
-    )
+    with Stage(f"[1/4] Cargando modelo Whisper ({wx_cfg['model']}) en {device}"):
+        model = whisperx.load_model(
+            wx_cfg["model"], device=device, compute_type=compute_type
+        )
 
-    print("[2/4] Transcribiendo audio...")
-    audio = whisperx.load_audio(str(audio_path))
-    result = model.transcribe(
-        audio, batch_size=wx_cfg["batch_size"], language=wx_cfg["language"]
-    )
+    with Stage("[2/4] Transcribiendo audio (puede tardar varios minutos en CPU)"):
+        audio = whisperx.load_audio(str(audio_path))
+        result = model.transcribe(
+            audio, batch_size=wx_cfg["batch_size"], language=wx_cfg["language"]
+        )
 
-    print("[3/4] Alineando transcripción a nivel de palabra...")
-    model_a, metadata = whisperx.load_align_model(
-        language_code=wx_cfg["language"], device=device
-    )
-    result = whisperx.align(
-        result["segments"], model_a, metadata, audio, device, return_char_alignments=False
-    )
+    with Stage("[3/4] Alineando transcripción a nivel de palabra"):
+        model_a, metadata = whisperx.load_align_model(
+            language_code=wx_cfg["language"], device=device
+        )
+        result = whisperx.align(
+            result["segments"], model_a, metadata, audio, device, return_char_alignments=False
+        )
 
     if wx_cfg["diarization"]:
-        print("[4/4] Diarizando (identificando hablantes)...")
         hf_token = os.environ.get(wx_cfg["hf_token_env"])
         if not hf_token:
             raise RuntimeError(
                 f"Falta la variable de entorno {wx_cfg['hf_token_env']} "
                 "con tu token de HuggingFace. Ver README.md sección 'Configuración'."
             )
-        diarize_model = whisperx.diarize.DiarizationPipeline(
-            model_name="pyannote/speaker-diarization-3.1", token=hf_token, device=device
-        )
-        diarize_segments = diarize_model(str(audio_path))
-        result = whisperx.assign_word_speakers(diarize_segments, result)
+        with Stage("[4/4] Diarizando — identificando hablantes (puede tardar varios minutos en CPU)"):
+            diarize_model = whisperx.diarize.DiarizationPipeline(
+                model_name="pyannote/speaker-diarization-3.1", token=hf_token, device=device
+            )
+            diarize_segments = diarize_model(str(audio_path))
+            result = whisperx.assign_word_speakers(diarize_segments, result)
     else:
         print("[4/4] Diarización desactivada en config.yaml — se omite.")
 
     return result
 
 
-def collect_speaker_samples(segments: list, max_samples: int = 2) -> dict:
+def collect_speaker_samples(segments: list, max_samples: int = 4) -> dict:
     """Junta 1-2 frases de ejemplo por cada SPEAKER_XX para mostrarlas al usuario."""
     samples = {}
     for seg in segments:
@@ -158,37 +172,42 @@ def main():
         print(f"Error: no existe el archivo {audio_path}")
         sys.exit(1)
 
-    cfg = load_config()
-    result = transcribe_and_diarize(audio_path, cfg)
-    segments = result["segments"]
+    with logged_run("01_transcribe", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
 
-    samples = collect_speaker_samples(segments)
-    mapping = ask_speaker_mapping(samples)
-    segments = apply_mapping(segments, mapping)
-    readable_transcript = build_readable_transcript(segments)
+        cfg = load_config()
+        result = transcribe_and_diarize(audio_path, cfg)
+        segments = result["segments"]
 
-    transcripts_dir = ROOT / cfg["paths"]["transcripts_dir"]
-    transcripts_dir.mkdir(parents=True, exist_ok=True)
+        samples = collect_speaker_samples(segments)
+        mapping = ask_speaker_mapping(samples)
+        segments = apply_mapping(segments, mapping)
+        readable_transcript = build_readable_transcript(segments)
 
-    stem = audio_path.stem
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_id = f"{timestamp}_{stem}"
+        transcripts_dir = ROOT / cfg["paths"]["transcripts_dir"]
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
 
-    output = {
-        "id": out_id,
-        "audio_source": str(audio_path),
-        "created_at": datetime.now().isoformat(),
-        "speaker_mapping": mapping,
-        "segments": segments,
-        "readable_transcript": readable_transcript,
-    }
+        stem = audio_path.stem
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_id = f"{timestamp}_{stem}"
 
-    out_path = transcripts_dir / f"{out_id}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+        output = {
+            "id": out_id,
+            "audio_source": str(audio_path),
+            "created_at": datetime.now().isoformat(),
+            "speaker_mapping": mapping,
+            "segments": segments,
+            "readable_transcript": readable_transcript,
+        }
 
-    print(f"\n✅ Transcripción guardada en: {out_path}")
-    print(f"   Siguiente paso: python scripts/02_extract.py {out_path}")
+        out_path = transcripts_dir / f"{out_id}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2)
+
+        print(f"\n✅ Transcripción guardada en: {out_path}")
+        print(f"   Tiempo total: {format_duration(time.monotonic() - inicio)}")
+        print(f"   Siguiente paso: python scripts/02_extract.py {out_path}")
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 import json
+import time
 import yaml
 from pathlib import Path
 from datetime import datetime
@@ -41,6 +42,7 @@ load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schema import validate_extraction  # noqa: E402
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 
 def load_config():
@@ -92,7 +94,8 @@ def extract_with_retry(prompt: str, cfg: dict, max_retries: int = 1) -> dict:
     attempt = 0
     extra_context = ""
     while attempt <= max_retries:
-        raw = call_claude(prompt, cfg, extra_context)
+        with Stage(f"Llamando a Claude para extracción estructurada (intento {attempt + 1}/{max_retries + 1})"):
+            raw = call_claude(prompt, cfg, extra_context)
         try:
             data = parse_json_response(raw)
         except json.JSONDecodeError as e:
@@ -133,36 +136,40 @@ def main():
         print(f"Error: no existe el archivo {transcript_path}")
         sys.exit(1)
 
-    cfg = load_config()
+    with logged_run("02_extract", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
 
-    with open(transcript_path, "r", encoding="utf-8") as f:
-        transcript_data = json.load(f)
+        cfg = load_config()
 
-    transcripcion = transcript_data["readable_transcript"]
-    if not transcripcion.strip():
-        print("Error: la transcripción está vacía.")
-        sys.exit(1)
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            transcript_data = json.load(f)
 
-    print("Llamando a Claude para extracción estructurada...")
-    prompt = build_prompt(transcripcion, cfg)
-    extraction = extract_with_retry(prompt, cfg)
+        transcripcion = transcript_data["readable_transcript"]
+        if not transcripcion.strip():
+            print("Error: la transcripción está vacía.")
+            sys.exit(1)
 
-    # Adjuntamos metadata de trazabilidad que no viene del modelo
-    extraction["_pipeline_meta"] = {
-        "transcript_source": str(transcript_path),
-        "extracted_at": datetime.now().isoformat(),
-        "reunion_id": transcript_data["id"],
-    }
+        prompt = build_prompt(transcripcion, cfg)
+        extraction = extract_with_retry(prompt, cfg)
 
-    staging_dir = ROOT / cfg["paths"]["staging_dir"]
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    out_path = staging_dir / f"{transcript_data['id']}.json"
+        # Adjuntamos metadata de trazabilidad que no viene del modelo
+        extraction["_pipeline_meta"] = {
+            "transcript_source": str(transcript_path),
+            "extracted_at": datetime.now().isoformat(),
+            "reunion_id": transcript_data["id"],
+        }
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(extraction, f, ensure_ascii=False, indent=2)
+        staging_dir = ROOT / cfg["paths"]["staging_dir"]
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        out_path = staging_dir / f"{transcript_data['id']}.json"
 
-    print(f"\n✅ Extracción validada y guardada en: {out_path}")
-    print(f"   Siguiente paso: python scripts/03_staging_review.py {out_path}")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(extraction, f, ensure_ascii=False, indent=2)
+
+        print(f"\n✅ Extracción validada y guardada en: {out_path}")
+        print(f"   Tiempo total: {format_duration(time.monotonic() - inicio)}")
+        print(f"   Siguiente paso: python scripts/03_staging_review.py {out_path}")
 
 
 if __name__ == "__main__":

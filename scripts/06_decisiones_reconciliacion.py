@@ -37,6 +37,7 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 import json
+import time
 import yaml
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -50,6 +51,7 @@ load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notion_client import NotionClient, get_database_id  # noqa: E402
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 
 def load_config() -> dict:
@@ -182,22 +184,28 @@ def ejecutar_reconciliacion(cfg: dict, client: NotionClient = None) -> dict:
     else:
         existentes = get_decisiones_existentes(client, cfg)
         prompt = build_prompt(nuevas_candidatas, existentes)
-        propuesta = call_claude(prompt, cfg)
+        with Stage("Llamando a Claude para reconciliar decisiones"):
+            propuesta = call_claude(prompt, cfg)
 
     guardar_propuesta(propuesta, ROOT / cfg["paths"]["staging_dir"])
     return propuesta
 
 
 def main():
-    cfg = load_config()
-    propuesta = ejecutar_reconciliacion(cfg)
-    nuevas = propuesta.get("nuevas", [])
-    actualizaciones = propuesta.get("actualizaciones", [])
-    if not nuevas and not actualizaciones:
-        print("Sin propuestas de decisiones esta semana.")
-        return
-    print(f"{len(nuevas)} decisión(es) nueva(s), {len(actualizaciones)} actualización(es) propuesta(s).")
-    print("Para aplicarlas a Notion: python scripts/07_aplicar_decisiones.py")
+    with logged_run("06_decisiones_reconciliacion", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
+
+        cfg = load_config()
+        propuesta = ejecutar_reconciliacion(cfg)
+        nuevas = propuesta.get("nuevas", [])
+        actualizaciones = propuesta.get("actualizaciones", [])
+        if not nuevas and not actualizaciones:
+            print("Sin propuestas de decisiones esta semana.")
+            return
+        print(f"{len(nuevas)} decisión(es) nueva(s), {len(actualizaciones)} actualización(es) propuesta(s).")
+        print(f"Tiempo total: {format_duration(time.monotonic() - inicio)}")
+        print("Para aplicarlas a Notion: python scripts/07_aplicar_decisiones.py")
 
 
 if __name__ == "__main__":
