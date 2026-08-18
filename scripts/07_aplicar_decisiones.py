@@ -43,6 +43,7 @@ if sys.platform == "win32":
 
 import json
 import shutil
+import time
 import yaml
 from pathlib import Path
 from datetime import date
@@ -64,6 +65,7 @@ from notion_client import (  # noqa: E402
     prop_date,
     block_paragraph,
 )
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 ESTADOS_VALIDOS = {"Not started", "In progress", "Done"}
 ESTADO_POR_DEFECTO = "Not started"
@@ -150,7 +152,9 @@ def aplicar_propuesta(propuesta: dict, cfg: dict, client: NotionClient) -> dict:
         "actualizaciones_pendientes": [],
     }
 
-    for item in propuesta.get("nuevas", []):
+    nuevas = propuesta.get("nuevas", [])
+    for i, item in enumerate(nuevas, start=1):
+        print(f"  [{i}/{len(nuevas)}] Creando decisión: {item.get('decision', '?')}...")
         try:
             props = build_nueva_decision_properties(item, cfg)
             blocks = build_nueva_decision_blocks(item)
@@ -159,11 +163,14 @@ def aplicar_propuesta(propuesta: dict, cfg: dict, client: NotionClient) -> dict:
                 {"decision": item["decision"], "url": page.get("url", page.get("id"))}
             )
         except Exception as e:
+            print(f"    ❌ Falló: {e}")
             resultado["errores"].append(f"Crear \"{item.get('decision', '?')}\": {e}")
             resultado["nuevas_pendientes"].append(item)
 
     p = cfg["notion"]["propiedades_decisiones"]
-    for item in propuesta.get("actualizaciones", []):
+    actualizaciones = propuesta.get("actualizaciones", [])
+    for i, item in enumerate(actualizaciones, start=1):
+        print(f"  [{i}/{len(actualizaciones)}] Actualizando decisión: {item.get('decision_existente', '?')}...")
         try:
             estado_nuevo = item.get("estado_nuevo")
             if estado_nuevo not in ESTADOS_VALIDOS:
@@ -175,6 +182,7 @@ def aplicar_propuesta(propuesta: dict, cfg: dict, client: NotionClient) -> dict:
                 {"decision": item.get("decision_existente", page_id), "estado_nuevo": estado_nuevo}
             )
         except Exception as e:
+            print(f"    ❌ Falló: {e}")
             resultado["errores"].append(
                 f"Actualizar \"{item.get('decision_existente', '?')}\": {e}"
             )
@@ -205,48 +213,57 @@ def formatear_resumen_aplicacion(resultado: dict) -> str:
 
 
 def main():
-    cfg = load_config()
-    client = NotionClient()
-
     if len(sys.argv) == 2:
         propuesta_path = Path(sys.argv[1]).resolve()
         if not propuesta_path.exists():
             print(f"Error: no existe el archivo {propuesta_path}")
             sys.exit(1)
-    elif len(sys.argv) == 1:
-        propuesta_path = find_latest_propuesta(ROOT / cfg["paths"]["staging_dir"])
-        print(f"Usando la propuesta más reciente: {propuesta_path}")
-    else:
+    elif len(sys.argv) != 1:
         print("Uso: python scripts/07_aplicar_decisiones.py [ruta_a_propuesta.json]")
         sys.exit(1)
+    else:
+        propuesta_path = None  # se resuelve adentro, ya con logging activo
 
-    with open(propuesta_path, "r", encoding="utf-8") as f:
-        propuesta = json.load(f)
+    with logged_run("07_aplicar_decisiones", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
 
-    print("Aplicando propuesta a la base 'Decisiones' en Notion...")
-    resultado = aplicar_propuesta(propuesta, cfg, client)
+        cfg = load_config()
+        client = NotionClient()
 
-    resumen = formatear_resumen_aplicacion(resultado)
-    print(resumen if resumen else "Nada que aplicar (propuesta vacía).")
+        if propuesta_path is None:
+            propuesta_path = find_latest_propuesta(ROOT / cfg["paths"]["staging_dir"])
+            print(f"Usando la propuesta más reciente: {propuesta_path}")
 
-    if resultado["errores"]:
-        pendiente = {
-            "nuevas": resultado["nuevas_pendientes"],
-            "actualizaciones": resultado["actualizaciones_pendientes"],
-        }
-        with open(propuesta_path, "w", encoding="utf-8") as f:
-            json.dump(pendiente, f, ensure_ascii=False, indent=2)
-        print(
-            f"\n⚠️  Hubo errores — {propuesta_path} quedó reescrito solo con lo "
-            "pendiente. Corrígelo y vuelve a correr este script para reintentar."
-        )
-        sys.exit(1)
+        with open(propuesta_path, "r", encoding="utf-8") as f:
+            propuesta = json.load(f)
 
-    processed_dir = ROOT / cfg["paths"]["processed_dir"]
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    dest = processed_dir / propuesta_path.name
-    shutil.move(str(propuesta_path), str(dest))
-    print(f"\n✅ Propuesta aplicada por completo y movida a: {dest}")
+        n_total = len(propuesta.get("nuevas", [])) + len(propuesta.get("actualizaciones", []))
+        with Stage(f"Aplicando propuesta a la base 'Decisiones' en Notion ({n_total} ítem(s))"):
+            resultado = aplicar_propuesta(propuesta, cfg, client)
+
+        resumen = formatear_resumen_aplicacion(resultado)
+        print(resumen if resumen else "Nada que aplicar (propuesta vacía).")
+        print(f"Tiempo total: {format_duration(time.monotonic() - inicio)}")
+
+        if resultado["errores"]:
+            pendiente = {
+                "nuevas": resultado["nuevas_pendientes"],
+                "actualizaciones": resultado["actualizaciones_pendientes"],
+            }
+            with open(propuesta_path, "w", encoding="utf-8") as f:
+                json.dump(pendiente, f, ensure_ascii=False, indent=2)
+            print(
+                f"\n⚠️  Hubo errores — {propuesta_path} quedó reescrito solo con lo "
+                "pendiente. Corrígelo y vuelve a correr este script para reintentar."
+            )
+            sys.exit(1)
+
+        processed_dir = ROOT / cfg["paths"]["processed_dir"]
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        dest = processed_dir / propuesta_path.name
+        shutil.move(str(propuesta_path), str(dest))
+        print(f"\n✅ Propuesta aplicada por completo y movida a: {dest}")
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -58,6 +59,7 @@ from notion_client import (  # noqa: E402
     block_paragraph,
     block_bulleted_item,
 )
+from progress import Stage, logged_run, format_duration  # noqa: E402
 
 
 def load_config() -> dict:
@@ -176,55 +178,57 @@ def append_digest_to_notion(client: NotionClient, page_id: str, digest_text: str
 
 
 def main():
-    cfg = load_config()
-    client = NotionClient()
+    with logged_run("05_weekly_digest", ROOT) as log_path:
+        print(f"📄 Log de esta corrida: {log_path}")
+        inicio = time.monotonic()
 
-    print("Buscando reuniones de los últimos 7 días...")
-    meetings = get_meetings_last_week(client, cfg)
-    print(f"  {len(meetings)} reunión(es) encontrada(s).")
+        cfg = load_config()
+        client = NotionClient()
 
-    if meetings:
-        contenido = "\n\n".join(build_meeting_content(client, m, cfg) for m in meetings)
-    else:
-        contenido = "(No hubo reuniones registradas en los últimos 7 días.)"
+        with Stage("Buscando reuniones de los últimos 7 días"):
+            meetings = get_meetings_last_week(client, cfg)
+        print(f"  {len(meetings)} reunión(es) encontrada(s).")
 
-    print("Generando resumen con Claude...")
-    prompt = build_prompt(contenido)
-    digest = call_claude(prompt, cfg)
+        if meetings:
+            contenido = "\n\n".join(build_meeting_content(client, m, cfg) for m in meetings)
+        else:
+            contenido = "(No hubo reuniones registradas en los últimos 7 días.)"
 
-    print("Revisando tareas con responsable sin resolver...")
-    sin_resolver = count_tareas_responsable_sin_resolver(client, cfg)
-    if sin_resolver:
-        digest += (
-            f"\n\n⚠️ {sin_resolver} tarea(s) en Notion con responsable sin "
-            "resolver (ver campo Notas) — complétalas a mano o agrega el "
-            "user ID en config.yaml → notion.resolucion_personas."
-        )
+        with Stage("Generando resumen con Claude"):
+            prompt = build_prompt(contenido)
+            digest = call_claude(prompt, cfg)
 
-    # Reconciliación de decisiones (paso 6) + aplicación automática (paso 7):
-    # a diferencia del resto de este script (que solo lee reuniones y agrega
-    # texto), esto sí escribe en la base "Decisiones" — ver docstring de
-    # 07_aplicar_decisiones.py para la justificación de ese cambio de diseño.
-    try:
-        import importlib
-        decisiones_mod = importlib.import_module("06_decisiones_reconciliacion")
-        aplicar_mod = importlib.import_module("07_aplicar_decisiones")
-        print("Generando propuesta de reconciliación de decisiones...")
-        propuesta = decisiones_mod.ejecutar_reconciliacion(cfg, client)
-        print("Aplicando propuesta de decisiones en Notion...")
-        resultado = aplicar_mod.aplicar_propuesta(propuesta, cfg, client)
-        resumen_decisiones = aplicar_mod.formatear_resumen_aplicacion(resultado)
-        if resumen_decisiones:
-            digest = f"{digest}\n\n{resumen_decisiones}"
-    except Exception as e:
-        print(f"  ⚠️  Reconciliación/aplicación de decisiones omitida ({e}).")
+        sin_resolver = count_tareas_responsable_sin_resolver(client, cfg)
+        if sin_resolver:
+            digest += (
+                f"\n\n⚠️ {sin_resolver} tarea(s) en Notion con responsable sin "
+                "resolver (ver campo Notas) — complétalas a mano o agrega el "
+                "user ID en config.yaml → notion.resolucion_personas."
+            )
 
-    print("Guardando resumen en la página 'Resúmenes semanales' de Notion...")
-    page_id = find_or_create_resumenes_page(client, cfg)
-    append_digest_to_notion(client, page_id, digest)
-    print("  ✅ Resumen agregado a Notion.")
+        # Reconciliación de decisiones (paso 6) + aplicación automática (paso 7):
+        # a diferencia del resto de este script (que solo lee reuniones y agrega
+        # texto), esto sí escribe en la base "Decisiones" — ver docstring de
+        # 07_aplicar_decisiones.py para la justificación de ese cambio de diseño.
+        try:
+            import importlib
+            decisiones_mod = importlib.import_module("06_decisiones_reconciliacion")
+            aplicar_mod = importlib.import_module("07_aplicar_decisiones")
+            with Stage("Generando propuesta de reconciliación de decisiones"):
+                propuesta = decisiones_mod.ejecutar_reconciliacion(cfg, client)
+            with Stage("Aplicando propuesta de decisiones en Notion"):
+                resultado = aplicar_mod.aplicar_propuesta(propuesta, cfg, client)
+            resumen_decisiones = aplicar_mod.formatear_resumen_aplicacion(resultado)
+            if resumen_decisiones:
+                digest = f"{digest}\n\n{resumen_decisiones}"
+        except Exception as e:
+            print(f"  ⚠️  Reconciliación/aplicación de decisiones omitida ({e}).")
 
-    print("\n✅ Resumen semanal completo.")
+        with Stage("Guardando resumen en la página 'Resúmenes semanales' de Notion"):
+            page_id = find_or_create_resumenes_page(client, cfg)
+            append_digest_to_notion(client, page_id, digest)
+
+        print(f"\n✅ Resumen semanal completo. Tiempo total: {format_duration(time.monotonic() - inicio)}")
 
 
 if __name__ == "__main__":

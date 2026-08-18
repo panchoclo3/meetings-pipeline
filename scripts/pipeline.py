@@ -25,18 +25,25 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 import subprocess
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from progress import format_duration  # noqa: E402
 
-def run_step(cmd: list) -> str:
-    """Ejecuta un paso y devuelve la última línea relevante de su stdout (la ruta de salida)."""
+
+def run_step(cmd: list) -> None:
+    """Ejecuta un paso (su propio progreso/log queda a cargo del script hijo) y reporta el tiempo."""
+    inicio = time.monotonic()
     result = subprocess.run(cmd, cwd=ROOT, text=True)
+    elapsed = format_duration(time.monotonic() - inicio)
     if result.returncode != 0:
-        print(f"\n❌ El paso falló: {' '.join(cmd)}")
+        print(f"\n❌ El paso falló tras {elapsed}: {' '.join(cmd)}")
         sys.exit(1)
+    print(f"⏱  Paso completado en {elapsed}.")
 
 
 def find_latest(directory: Path, pattern: str) -> Path:
@@ -55,6 +62,8 @@ def main():
     if not audio_path.exists():
         print(f"Error: no existe el archivo {audio_path}")
         sys.exit(1)
+
+    inicio_total = time.monotonic()
 
     print("=" * 60)
     print("PASO 1/3 — Transcripción y diarización")
@@ -76,6 +85,7 @@ def main():
     print("\n" + "=" * 60)
     print("⏸  PIPELINE PAUSADO — revisión humana requerida")
     print("=" * 60)
+    print(f"\nTiempo total (pasos 1-3): {format_duration(time.monotonic() - inicio_total)}")
     print(f"\n1. Revisa: {staging_path.with_suffix('.md')}")
     print(f"2. Si necesitas corregir algo, edita: {staging_path}")
     print(f"3. Cuando esté aprobado, ejecuta:\n")

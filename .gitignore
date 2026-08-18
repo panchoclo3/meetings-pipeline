@@ -19,6 +19,8 @@ data/staging/*
 !data/staging/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
 
 # Logs sueltos
 *.log

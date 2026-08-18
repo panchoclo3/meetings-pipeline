@@ -32,6 +32,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from progress import logged_run  # noqa: E402
 
 
 def render_markdown(data: dict) -> str:
@@ -134,18 +136,19 @@ def main():
         print(f"Error: no existe el archivo {staging_path}")
         sys.exit(1)
 
-    with open(staging_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    with logged_run("03_staging_review", ROOT):
+        with open(staging_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-    md = render_markdown(data)
-    md_path = staging_path.with_suffix(".md")
-    md_path.write_text(md, encoding="utf-8")
+        md = render_markdown(data)
+        md_path = staging_path.with_suffix(".md")
+        md_path.write_text(md, encoding="utf-8")
 
-    print_terminal_summary(data)
-    print(f"\n📝 Resumen legible generado en: {md_path}")
-    print("   Ábrelo, revisa. Si necesitas corregir algo, edita directamente:")
-    print(f"   {staging_path}")
-    print(f"\n   Cuando esté listo: python scripts/04_push_notion.py {staging_path}")
+        print_terminal_summary(data)
+        print(f"\n📝 Resumen legible generado en: {md_path}")
+        print("   Ábrelo, revisa. Si necesitas corregir algo, edita directamente:")
+        print(f"   {staging_path}")
+        print(f"\n   Cuando esté listo: python scripts/04_push_notion.py {staging_path}")
 
 
 if __name__ == "__main__":
