@@ -281,6 +281,12 @@ python scripts/03_staging_review.py data/staging/<archivo_generado>.json
 # Revisa data/staging/<archivo>.md — corrige el .json si algo está mal —
 
 python scripts/04_push_notion.py data/staging/<archivo_generado>.json
+
+# Si por esta vez no quieres crear las tareas en Notion (solo la reunión),
+# agrega --sin-tareas. Las decisiones nunca se tocan en este paso — solo
+# se crean/actualizan en los pasos 6/7, así que no necesitas ningún flag
+# para excluirlas.
+python scripts/04_push_notion.py data/staging/<archivo_generado>.json --sin-tareas
 ```
 
 ### Paso 5 (independiente) — Resumen semanal en Notion
