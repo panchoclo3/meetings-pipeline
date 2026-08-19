@@ -4,17 +4,26 @@ Paso 4 — Escritura final a Notion
 
 Uso:
     python scripts/04_push_notion.py data/staging/20260807_120000_reunion-mim.json
+    python scripts/04_push_notion.py data/staging/20260807_120000_reunion-mim.json --sin-tareas
 
 Qué hace:
 1. Lee el JSON aprobado (después de tu revisión en el paso 3).
 2. Crea la página en la base "Reuniones" con las propiedades correspondientes
    y todo el contenido (resumen, decisiones, ideas, etc.) como bloques.
 3. Crea una página en "Tareas" por cada tarea extraída, con relación a la
-   página de la reunión recién creada.
+   página de la reunión recién creada — salvo que se pase --sin-tareas, en
+   cuyo caso se omiten por completo (ni se crean en la base Tareas, ni se
+   listan en el cuerpo de la página de la reunión).
 4. Mueve el JSON de staging/ a processed/ (evita reprocesar por error).
 
 Este script asume que ya creaste las dos bases en Notion con las propiedades
 definidas en config.yaml (ver README.md sección 'Setup de Notion').
+
+Nota sobre --sin-tareas: el JSON de staging se mueve igual a processed/ una
+vez creada la reunión, aunque hayas saltado las tareas — evita duplicar la
+reunión si corrés el script de nuevo. Si más adelante querés esas tareas en
+Notion, tenés que crearlas a mano (este script no ofrece un "paso 4b" para
+agregarlas después sobre una reunión ya creada).
 """
 
 import sys
@@ -125,7 +134,7 @@ def build_reunion_properties(data: dict, cfg: dict) -> dict:
     }
 
 
-def build_reunion_content_blocks(data: dict) -> list:
+def build_reunion_content_blocks(data: dict, incluir_tareas: bool = True) -> list:
     blocks = []
 
     blocks.append(block_heading("Resumen ejecutivo"))
@@ -165,7 +174,7 @@ def build_reunion_content_blocks(data: dict) -> list:
         for step in data["proximos_pasos"]:
             blocks.append(block_bulleted_item(step))
 
-    if data["tareas"]:
+    if incluir_tareas and data["tareas"]:
         blocks.append(block_heading("Tareas (ver también base Tareas)"))
         for t in data["tareas"]:
             blocks.append(block_todo(f"{t['titulo']} — {', '.join(t['responsable']) or 'sin asignar'}"))
@@ -212,11 +221,15 @@ def build_tarea_properties(
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Uso: python scripts/04_push_notion.py <ruta_al_staging.json>")
+    argv = sys.argv[1:]
+    sin_tareas = "--sin-tareas" in argv
+    posicionales = [a for a in argv if a != "--sin-tareas"]
+
+    if len(posicionales) != 1:
+        print("Uso: python scripts/04_push_notion.py <ruta_al_staging.json> [--sin-tareas]")
         sys.exit(1)
 
-    staging_path = Path(sys.argv[1]).resolve()
+    staging_path = Path(posicionales[0]).resolve()
     if not staging_path.exists():
         print(f"Error: no existe el archivo {staging_path}")
         sys.exit(1)
@@ -231,47 +244,55 @@ def main():
             data = json.load(f)
 
         reuniones_db = get_database_id(cfg["notion"], "reuniones")
-        tareas_db = get_database_id(cfg["notion"], "tareas")
-
         client = NotionClient()
-        api_users_by_name = fetch_api_users_by_name(client)
 
         with Stage("Creando página de reunión en Notion"):
             reunion_props = build_reunion_properties(data, cfg)
-            reunion_blocks = build_reunion_content_blocks(data)
+            reunion_blocks = build_reunion_content_blocks(data, incluir_tareas=not sin_tareas)
             reunion_page = client.create_page(reuniones_db, reunion_props, reunion_blocks)
             reunion_page_id = reunion_page["id"]
         print(f"  ✅ Página creada: {reunion_page.get('url', reunion_page_id)}")
 
         task_pages = []
         tareas_sin_resolver = []
-        n_tareas = len(data["tareas"])
-        with Stage(f"Creando {n_tareas} tarea(s) en Notion"):
-            for i, tarea in enumerate(data["tareas"], start=1):
-                print(f"  [{i}/{n_tareas}] Creando tarea: {tarea['titulo']}...")
-                tarea_props, no_resueltos = build_tarea_properties(
-                    tarea, reunion_page_id, cfg, api_users_by_name
+        if sin_tareas:
+            n_extraidas = len(data["tareas"])
+            if n_extraidas:
+                print(
+                    f"  ⏭️  --sin-tareas: se omiten {n_extraidas} tarea(s) extraída(s) "
+                    "— no se crean en Notion."
                 )
-                if no_resueltos:
-                    print(
-                        f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
-                        f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
-                    )
-                    tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
-                tarea_page = client.create_page(tareas_db, tarea_props)
-                task_pages.append(tarea_page.get("url", tarea_page["id"]))
+        else:
+            tareas_db = get_database_id(cfg["notion"], "tareas")
+            api_users_by_name = fetch_api_users_by_name(client)
 
-        if tareas_sin_resolver:
-            print(
-                f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
-                "con al menos un responsable sin resolver:"
-            )
-            for titulo, nombres in tareas_sin_resolver:
-                print(f"   - \"{titulo}\": {', '.join(nombres)}")
-            print(
-                "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
-                "ID reales, o asígnalos a mano en Notion."
-            )
+            n_tareas = len(data["tareas"])
+            with Stage(f"Creando {n_tareas} tarea(s) en Notion"):
+                for i, tarea in enumerate(data["tareas"], start=1):
+                    print(f"  [{i}/{n_tareas}] Creando tarea: {tarea['titulo']}...")
+                    tarea_props, no_resueltos = build_tarea_properties(
+                        tarea, reunion_page_id, cfg, api_users_by_name
+                    )
+                    if no_resueltos:
+                        print(
+                            f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
+                            f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
+                        )
+                        tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
+                    tarea_page = client.create_page(tareas_db, tarea_props)
+                    task_pages.append(tarea_page.get("url", tarea_page["id"]))
+
+            if tareas_sin_resolver:
+                print(
+                    f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
+                    "con al menos un responsable sin resolver:"
+                )
+                for titulo, nombres in tareas_sin_resolver:
+                    print(f"   - \"{titulo}\": {', '.join(nombres)}")
+                print(
+                    "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
+                    "ID reales, o asígnalos a mano en Notion."
+                )
 
         # Mover de staging a processed para no reprocesar por accidente
         processed_dir = ROOT / cfg["paths"]["processed_dir"]
