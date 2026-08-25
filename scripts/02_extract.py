@@ -52,11 +52,20 @@ def load_config():
 
 def build_prompt(transcripcion: str, cfg: dict) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
+    epicas = cfg["notion"]["epicas"]
+    decisiones_madre = cfg["notion"]["decisiones_madre"]
     return template.format(
         proyectos_lista="\n".join(f"- {p}" for p in cfg["proyectos"]),
         tags_lista="\n".join(f"- {t}" for t in cfg["tags_permitidos"]),
         tipos_lista="\n".join(f"- {t}" for t in cfg["tipos_reunion"]),
         personas_lista="\n".join(f"- {p}" for p in cfg["personas_permitidas"]),
+        prototipos_lista="\n".join(f"- {p}" for p in cfg["prototipos_permitidos"]),
+        prototipos_ideas_lista="\n".join(f"- {p}" for p in cfg["prototipos_ideas"]),
+        areas_lista="\n".join(f"- {a}" for a in cfg["areas_permitidas"]),
+        epicas_lista="\n".join(f"- {codigo}: {info['nombre']}" for codigo, info in epicas.items()),
+        decisiones_madre_lista="\n".join(
+            f"- {codigo}: {info['nombre']}" for codigo, info in decisiones_madre.items()
+        ),
         transcripcion=transcripcion,
     )
 

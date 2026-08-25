@@ -5,6 +5,14 @@ Por qué validamos con jsonschema en vez de confiar ciegamente en la respuesta
 del modelo: si Claude devuelve algo con un campo faltante o mal tipado, mejor
 que el script falle de inmediato con un error claro que descubrir el problema
 tres pasos después, ya con la información parcialmente escrita en Notion.
+
+Nota de diseño: "ideas", "decisiones" y "tareas" son CANDIDATOS, no registros
+listos para escribir. El paso 2 (este esquema) decide el NIVEL de cada cosa
+(Idea vs Decisión vs Tarea) según el lenguaje del audio — eso no se vuelve a
+tocar después. Lo que SÍ falta resolver en pasos posteriores (scripts/06 y
+scripts/07) es: si el candidato es duplicado de algo que ya existe en Notion,
+y a qué épica / decisión madre cuelga — eso requiere consultar Notion en vivo,
+no se puede decidir solo mirando la transcripción.
 """
 
 EXTRACTION_SCHEMA = {
@@ -13,9 +21,9 @@ EXTRACTION_SCHEMA = {
         "metadata",
         "resumen_ejecutivo",
         "resumen_detallado",
+        "ideas",
         "decisiones",
         "tareas",
-        "ideas",
         "preguntas_abiertas",
         "proximos_pasos",
         "advertencias_extraccion",
@@ -53,15 +61,53 @@ EXTRACTION_SCHEMA = {
         },
         "resumen_ejecutivo": {"type": "string"},
         "resumen_detallado": {"type": "string"},
+        "ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["idea", "problema_que_resuelve", "estado"],
+                "properties": {
+                    "idea": {"type": "string"},
+                    "problema_que_resuelve": {"type": ["string", "null"]},
+                    "horizonte": {
+                        "type": ["string", "null"],
+                        "enum": ["Ahora", "V2 MIM", "Feria", "Futuro", None],
+                    },
+                    "encaje_filosofico": {
+                        "type": ["string", "null"],
+                        "enum": ["Refuerza", "Neutro", "Tensiona", None],
+                    },
+                    "prototipo": {"type": "array", "items": {"type": "string"}},
+                    "esfuerzo": {
+                        "type": ["string", "null"],
+                        "enum": ["Bajo", "Medio", "Alto", "Muy alto", None],
+                    },
+                    "estado": {"type": "string", "enum": ["Propuesta", "En discusion"]},
+                    "cita_transcripcion": {"type": ["string", "null"]},
+                },
+            },
+        },
         "decisiones": {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["decision", "razon", "estado"],
+                "required": ["decision", "tema", "razon", "estado_vigencia", "decision_madre_sugerida"],
                 "properties": {
+                    # La resolución en sí ("Mantener el eje interno"), nunca
+                    # su estado ("Pendiente: interno vs externo").
                     "decision": {"type": "string"},
+                    "tema": {"type": "string"},
                     "razon": {"type": "string"},
-                    "estado": {"type": "string", "enum": ["confirmada", "tentativa"]},
+                    "prototipo": {"type": ["string", "null"]},
+                    # Vigencia al momento de la extracción — nunca "Superada"
+                    # ni "Revertida" acá: eso solo lo decide la reconciliación
+                    # al comparar contra lo que ya existe en Notion.
+                    "estado_vigencia": {"type": "string", "enum": ["Vigente", "Tentativa"]},
+                    "decision_madre_sugerida": {
+                        "type": "string",
+                        "enum": ["D1", "D2", "D3", "D4"],
+                    },
+                    "posible_reemplazo_de": {"type": ["string", "null"]},
                     "cita_transcripcion": {"type": ["string", "null"]},
                 },
             },
@@ -70,7 +116,7 @@ EXTRACTION_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["titulo", "responsable", "prioridad", "confianza"],
+                "required": ["titulo", "responsable", "prioridad", "area", "epica_sugerida", "confianza"],
                 "properties": {
                     "titulo": {"type": "string"},
                     "responsable": {"type": "array", "items": {"type": "string"}},
@@ -78,23 +124,13 @@ EXTRACTION_SCHEMA = {
                         "type": ["string", "null"],
                         "enum": ["alta", "media", "baja", None],
                     },
+                    "prototipo": {"type": ["string", "null"]},
+                    "area": {"type": "string"},
+                    # Código de épica (AUT-1, MED-2, ...) o "NINGUNA_ENCAJA" si
+                    # de verdad no encaja ninguna — nunca se inventa una.
+                    "epica_sugerida": {"type": "string"},
+                    "justificacion_epica": {"type": ["string", "null"]},
                     "confianza": {"type": "string", "enum": ["alta", "media", "baja"]},
-                },
-            },
-        },
-        "ideas": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["idea", "contexto", "estado"],
-                "properties": {
-                    "idea": {"type": "string"},
-                    "contexto": {"type": "string"},
-                    "estado": {
-                        "type": "string",
-                        "enum": ["propuesta", "descartada", "en_evaluacion"],
-                    },
-                    "razon_descarte": {"type": ["string", "null"]},
                 },
             },
         },

@@ -11,9 +11,12 @@ Qué hace:
 2. Lee el contenido (bloques) de cada página encontrada — el resumen
    ejecutivo, decisiones, tareas, etc. ya quedaron ahí en el paso 4.
 3. Le pide a Claude un resumen semanal en texto plano.
-4. Corre la reconciliación de decisiones (paso 6) y aplica la propuesta
-   automáticamente en Notion (paso 7 — ver 07_aplicar_decisiones.py), y
-   agrega al mismo resumen un recuento de qué se creó/actualizó.
+4. Corre la reconciliación de ideas/decisiones/tareas (paso 6) y aplica el
+   resultado automáticamente en Notion (paso 7 — ver 07_aplicar_cambios.py),
+   como red de seguridad: normalmente cada reunión ya se reconcilió sola al
+   correr el paso 4, así que esto solo encuentra algo si esa reconciliación
+   quedó pendiente en alguna reunión reciente. Agrega al mismo resumen un
+   recuento de qué se creó/actualizó.
 5. Agrega el texto resultante como bloque nuevo (con la fecha como
    encabezado) al final de la página "Resúmenes semanales", creándola si no
    existe.
@@ -24,9 +27,9 @@ cron/tarea programada sin el resto del entorno de transcripción.
 
 Filosofía del pipeline aplicada aquí: este script NUNCA modifica una
 reunión ya escrita — solo lee reuniones y agrega contenido nuevo (un
-resumen) al final de una página dedicada a resúmenes. Las decisiones, en
-cambio, sí se crean/actualizan automáticamente desde acá (ver paso 7) —
-ese es el único punto donde este pipeline escribe fuera de "solo agregar".
+resumen) al final de una página dedicada a resúmenes. Ideas/Decisiones/
+Tareas, en cambio, sí se crean/actualizan automáticamente desde acá (ver
+paso 7) — mismo mecanismo que ya corre dentro del paso 4.
 """
 
 import sys
@@ -206,23 +209,33 @@ def main():
                 "user ID en config.yaml → notion.resolucion_personas."
             )
 
-        # Reconciliación de decisiones (paso 6) + aplicación automática (paso 7):
-        # a diferencia del resto de este script (que solo lee reuniones y agrega
-        # texto), esto sí escribe en la base "Decisiones" — ver docstring de
-        # 07_aplicar_decisiones.py para la justificación de ese cambio de diseño.
+        # Reconciliación (paso 6) + aplicación automática (paso 7), como red
+        # de seguridad — ver docstring arriba. A diferencia del resto de este
+        # script (que solo lee reuniones y agrega texto), esto sí escribe en
+        # Ideas/Decisiones/Tareas — mismo mecanismo que ya corre en el paso 4.
         try:
             import importlib
-            decisiones_mod = importlib.import_module("06_decisiones_reconciliacion")
-            aplicar_mod = importlib.import_module("07_aplicar_decisiones")
-            with Stage("Generando propuesta de reconciliación de decisiones"):
-                propuesta = decisiones_mod.ejecutar_reconciliacion(cfg, client)
-            with Stage("Aplicando propuesta de decisiones en Notion"):
-                resultado = aplicar_mod.aplicar_propuesta(propuesta, cfg, client)
-            resumen_decisiones = aplicar_mod.formatear_resumen_aplicacion(resultado)
-            if resumen_decisiones:
-                digest = f"{digest}\n\n{resumen_decisiones}"
+            reconciliacion_mod = importlib.import_module("06_reconciliacion")
+            aplicar_mod = importlib.import_module("07_aplicar_cambios")
+            with Stage("Juntando candidatos pendientes de los últimos 7 días"):
+                candidatos = reconciliacion_mod.gather_candidatos_recientes(
+                    ROOT / cfg["paths"]["processed_dir"]
+                )
+            if any(candidatos.values()):
+                with Stage("Reconciliando contra Notion en vivo"):
+                    bundle = reconciliacion_mod.reconciliar(candidatos, cfg, client)
+                with Stage("Aplicando cambios en Notion"):
+                    resultado, bundle_pendiente = aplicar_mod.aplicar_propuesta(bundle, cfg, client)
+                resumen_cambios = aplicar_mod.formatear_resumen_aplicacion(resultado)
+                if resumen_cambios:
+                    digest = f"{digest}\n\n{resumen_cambios}"
+                if bundle_pendiente:
+                    pendientes_path = aplicar_mod.guardar_pendientes(
+                        bundle_pendiente, ROOT / cfg["paths"]["staging_dir"]
+                    )
+                    print(f"  ⚠️  Quedó algo pendiente: {pendientes_path}")
         except Exception as e:
-            print(f"  ⚠️  Reconciliación/aplicación de decisiones omitida ({e}).")
+            print(f"  ⚠️  Reconciliación/aplicación omitida ({e}).")
 
         with Stage("Guardando resumen en la página 'Resúmenes semanales' de Notion"):
             page_id = find_or_create_resumenes_page(client, cfg)
