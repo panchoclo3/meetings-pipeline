@@ -9,21 +9,26 @@ Uso:
 Qué hace:
 1. Lee el JSON aprobado (después de tu revisión en el paso 3).
 2. Crea la página en la base "Reuniones" con las propiedades correspondientes
-   y todo el contenido (resumen, decisiones, ideas, etc.) como bloques.
-3. Crea una página en "Tareas" por cada tarea extraída, con relación a la
-   página de la reunión recién creada — salvo que se pase --sin-tareas, en
-   cuyo caso se omiten por completo (ni se crean en la base Tareas, ni se
-   listan en el cuerpo de la página de la reunión).
-4. Mueve el JSON de staging/ a processed/ (evita reprocesar por error).
+   y todo el contenido (resumen, ideas, decisiones, tareas candidatas) como
+   bloques.
+3. Reconcilia in-línea contra Notion en vivo (scripts/06_reconciliacion.py)
+   y aplica el resultado (scripts/07_aplicar_cambios.py): crea/actualiza
+   Ideas, Decisiones y Tareas — sin duplicar nada que ya exista, con Tarea
+   madre / Decision madre resueltos al catálogo real. `--sin-tareas` excluye
+   las tareas de este paso (ideas y decisiones igual se reconcilian).
+4. Mueve el JSON de staging/ a processed/ (evita reprocesar por error). Si
+   algo quedó pendiente de la reconciliación (típicamente: ninguna épica
+   encaja para una tarea), se guarda aparte en staging/ para reintentar.
 
-Este script asume que ya creaste las dos bases en Notion con las propiedades
+Este script asume que ya creaste las bases en Notion con las propiedades
 definidas en config.yaml (ver README.md sección 'Setup de Notion').
 
-Nota sobre --sin-tareas: el JSON de staging se mueve igual a processed/ una
-vez creada la reunión, aunque hayas saltado las tareas — evita duplicar la
-reunión si corrés el script de nuevo. Si más adelante querés esas tareas en
-Notion, tenés que crearlas a mano (este script no ofrece un "paso 4b" para
-agregarlas después sobre una reunión ya creada).
+Por qué la reconciliación corre acá y no en un paso aparte: es la filosofía
+ya establecida de este pipeline — el único punto de revisión humana es el
+paso 3 (staging); todo lo que sigue después de que vos aprobás corre solo,
+hasta el final. Separarlo en otro paso manual solo agregaría fricción sin
+agregar seguridad real (ver scripts/06_reconciliacion.py para el detalle de
+qué hace la reconciliación en sí).
 """
 
 import sys
@@ -34,6 +39,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+import importlib
 import json
 import shutil
 import time
@@ -52,72 +58,19 @@ from notion_client import (  # noqa: E402
     NotionClient,
     get_database_id,
     prop_title,
-    prop_rich_text,
     prop_select,
-    prop_status,
     prop_multi_select,
     prop_date,
-    prop_relation,
-    prop_people,
     block_heading,
     block_paragraph,
     block_bulleted_item,
-    block_todo,
 )
 from progress import Stage, logged_run, format_duration  # noqa: E402
-
-# La base "Tareas" (Kanban) usa un campo de tipo "status" para Estado, no
-# "select" — Notion no deja crear opciones de status nuevas vía API, así que
-# mapeamos el vocabulario en español del pipeline a las opciones en inglés
-# ya definidas en la base.
-ESTADO_TAREA_A_STATUS = {
-    "Pendiente": "Not started",
-    "En progreso": "In progress",
-    "Hecho": "Done",
-}
-
-
-def capitalizar_prioridad(prioridad: str) -> str:
-    # La extracción de Claude produce "alta"/"media"/"baja" en minúscula, pero
-    # el select "Prioridad" en Notion espera "Alta"/"Media"/"Baja".
-    return prioridad.capitalize() if prioridad else prioridad
 
 
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def fetch_api_users_by_name(client: NotionClient) -> dict:
-    """
-    Respaldo automático para resolver nombre -> user ID cuando
-    config.yaml -> notion.resolucion_personas no tiene el ID a mano.
-    Nota: /v1/users solo devuelve miembros con cuenta completa del
-    workspace — invitados con acceso limitado no aparecen acá aunque
-    tengan tareas asignadas en Notion (ver README.md).
-    """
-    try:
-        users = client.list_users()
-    except RuntimeError as e:
-        print(f"  ⚠️  No se pudo consultar /v1/users para resolver personas: {e}")
-        return {}
-    return {u["name"]: u["id"] for u in users if u.get("name")}
-
-
-def resolver_persona(nombre: str, cfg: dict, api_users_by_name: dict):
-    """
-    Resuelve un nombre en texto libre al user ID real de Notion que
-    necesita el campo "Responsable" (tipo person). Prioridad:
-    1. config.yaml -> notion.resolucion_personas (mapeo editado a mano).
-    2. Búsqueda por nombre entre los usuarios que devuelve la API.
-    Devuelve None si ninguna de las dos fuentes lo resuelve — el llamador
-    decide qué hacer (ver build_tarea_properties).
-    """
-    mapeo = (cfg["notion"].get("resolucion_personas") or {})
-    user_id = mapeo.get(nombre)
-    if user_id:
-        return user_id
-    return api_users_by_name.get(nombre)
 
 
 def build_reunion_properties(data: dict, cfg: dict) -> dict:
@@ -145,24 +98,17 @@ def build_reunion_content_blocks(data: dict, incluir_tareas: bool = True) -> lis
         if para.strip():
             blocks.append(block_paragraph(para.strip()))
 
-    if data["decisiones"]:
-        blocks.append(block_heading("Decisiones"))
-        for d in data["decisiones"]:
-            tag = "" if d["estado"] == "confirmada" else " (tentativa)"
-            blocks.append(block_bulleted_item(f"{d['decision']}{tag} — {d['razon']}"))
-
     if data["ideas"]:
         blocks.append(block_heading("Ideas"))
         for i in data["ideas"]:
-            estado_txt = {
-                "propuesta": "Propuesta",
-                "descartada": "Descartada",
-                "en_evaluacion": "En evaluación",
-            }[i["estado"]]
-            line = f"[{estado_txt}] {i['idea']} — {i['contexto']}"
-            if i.get("razon_descarte"):
-                line += f" (Razón de descarte: {i['razon_descarte']})"
-            blocks.append(block_bulleted_item(line))
+            horizonte = f" [{i['horizonte']}]" if i.get("horizonte") else ""
+            blocks.append(block_bulleted_item(f"{i['idea']}{horizonte} — {i.get('problema_que_resuelve') or 'sin problema identificado'}"))
+
+    if data["decisiones"]:
+        blocks.append(block_heading("Decisiones"))
+        for d in data["decisiones"]:
+            tag = "" if d["estado_vigencia"] == "Vigente" else " (tentativa)"
+            blocks.append(block_bulleted_item(f"{d['decision']}{tag} — {d['razon']}"))
 
     if data["preguntas_abiertas"]:
         blocks.append(block_heading("Preguntas abiertas"))
@@ -177,47 +123,10 @@ def build_reunion_content_blocks(data: dict, incluir_tareas: bool = True) -> lis
     if incluir_tareas and data["tareas"]:
         blocks.append(block_heading("Tareas (ver también base Tareas)"))
         for t in data["tareas"]:
-            blocks.append(block_todo(f"{t['titulo']} — {', '.join(t['responsable']) or 'sin asignar'}"))
+            responsables = ", ".join(t["responsable"]) or "sin asignar"
+            blocks.append(block_bulleted_item(f"{t['titulo']} — {responsables} [{t['epica_sugerida']} / {t['area']}]"))
 
     return blocks
-
-
-def build_tarea_properties(
-    tarea: dict, reunion_page_id: str, cfg: dict, api_users_by_name: dict
-) -> tuple:
-    """
-    Devuelve (props, nombres_sin_resolver). "Responsable" es un campo person
-    de Notion — exige user IDs reales, no nombres en texto. Cada nombre que
-    la extracción encontró se resuelve vía resolver_persona(); los que no se
-    logran resolver NO se pierden: quedan como advertencia en "Notas" para
-    completar a mano, en vez de fallar la escritura o el campo quedar vacío
-    sin dejar rastro.
-    """
-    p = cfg["notion"]["propiedades_tareas"]
-    props = {
-        p["titulo"]: prop_title(tarea["titulo"]),
-        p["prioridad"]: prop_select(capitalizar_prioridad(tarea["prioridad"])),
-        p["estado"]: prop_status(ESTADO_TAREA_A_STATUS["Pendiente"]),
-        p["reunion_origen"]: prop_relation([reunion_page_id]),
-    }
-
-    resueltos = []
-    no_resueltos = []
-    for nombre in tarea["responsable"]:
-        user_id = resolver_persona(nombre, cfg, api_users_by_name)
-        if user_id:
-            resueltos.append(user_id)
-        else:
-            no_resueltos.append(nombre)
-
-    if resueltos:
-        props[p["responsable"]] = prop_people(resueltos)
-
-    if no_resueltos:
-        nota = " ".join(f'[Responsable sin resolver: "{n}"]' for n in no_resueltos)
-        props[p["notas"]] = prop_rich_text(nota)
-
-    return props, no_resueltos
 
 
 def main():
@@ -253,52 +162,59 @@ def main():
             reunion_page_id = reunion_page["id"]
         print(f"  ✅ Página creada: {reunion_page.get('url', reunion_page_id)}")
 
-        task_pages = []
-        tareas_sin_resolver = []
-        if sin_tareas:
-            n_extraidas = len(data["tareas"])
-            if n_extraidas:
-                print(
-                    f"  ⏭️  --sin-tareas: se omiten {n_extraidas} tarea(s) extraída(s) "
-                    "— no se crean en Notion."
-                )
+        # Grabamos el page_id real en el JSON — lo necesita la reconciliación
+        # (esta y cualquier corrida semanal de catch-up futura) para setear
+        # "Reunion origen" en lo que cree/actualice a partir de esta reunión.
+        data.setdefault("_pipeline_meta", {})["reunion_page_id"] = reunion_page_id
+
+        reconciliacion_mod = importlib.import_module("06_reconciliacion")
+        aplicar_mod = importlib.import_module("07_aplicar_cambios")
+
+        candidatos = reconciliacion_mod.candidatos_desde_reunion(
+            data, reunion_page_id, incluir_tareas=not sin_tareas
+        )
+        n_candidatos = sum(len(v) for v in candidatos.values())
+
+        if n_candidatos == 0:
+            print("  (Sin ideas, decisiones ni tareas candidatas — nada que reconciliar.)")
         else:
-            tareas_db = get_database_id(cfg["notion"], "tareas")
-            api_users_by_name = fetch_api_users_by_name(client)
+            with Stage(f"Reconciliando {n_candidatos} candidato(s) contra Notion en vivo"):
+                bundle = reconciliacion_mod.reconciliar(candidatos, cfg, client)
 
-            n_tareas = len(data["tareas"])
-            with Stage(f"Creando {n_tareas} tarea(s) en Notion"):
-                for i, tarea in enumerate(data["tareas"], start=1):
-                    print(f"  [{i}/{n_tareas}] Creando tarea: {tarea['titulo']}...")
-                    tarea_props, no_resueltos = build_tarea_properties(
-                        tarea, reunion_page_id, cfg, api_users_by_name
-                    )
-                    if no_resueltos:
-                        print(
-                            f"    ⚠️  Responsable(s) sin resolver a user ID de Notion: "
-                            f"{', '.join(no_resueltos)} — quedaron anotados en '{cfg['notion']['propiedades_tareas']['notas']}'."
-                        )
-                        tareas_sin_resolver.append((tarea["titulo"], no_resueltos))
-                    tarea_page = client.create_page(tareas_db, tarea_props)
-                    task_pages.append(tarea_page.get("url", tarea_page["id"]))
+            with Stage("Aplicando cambios en Notion (Ideas/Decisiones/Tareas)"):
+                resultado, bundle_pendiente = aplicar_mod.aplicar_propuesta(bundle, cfg, client)
 
-            if tareas_sin_resolver:
-                print(
-                    f"\n⚠️  Resumen: {len(tareas_sin_resolver)} de {len(task_pages)} tarea(s) "
-                    "con al menos un responsable sin resolver:"
+            resumen = aplicar_mod.formatear_resumen_aplicacion(resultado)
+            print(resumen if resumen else "  (Nada nuevo que crear ni actualizar — todo ya existía.)")
+
+            with Stage("Verificando consistencia (tareas/decisiones huérfanas)"):
+                chequeo = aplicar_mod.verificar_consistencia(cfg, client)
+            print(aplicar_mod.formatear_consistencia(chequeo))
+
+            if bundle_pendiente:
+                pendientes_path = aplicar_mod.guardar_pendientes(
+                    bundle_pendiente, ROOT / cfg["paths"]["staging_dir"]
                 )
-                for titulo, nombres in tareas_sin_resolver:
-                    print(f"   - \"{titulo}\": {', '.join(nombres)}")
                 print(
-                    "   Completa 'notion.resolucion_personas' en config.yaml con sus user "
-                    "ID reales, o asígnalos a mano en Notion."
+                    f"\n⚠️  Algo quedó pendiente (revisa el resumen de arriba) — guardado en: "
+                    f"{pendientes_path}"
+                )
+                print(
+                    "   Resuélvelo (ej. agrega la épica que falta a config.yaml) y corre:\n"
+                    f"   python scripts/07_aplicar_cambios.py {pendientes_path}"
                 )
 
-        # Mover de staging a processed para no reprocesar por accidente
+        # Mover de staging a processed para no reprocesar por accidente. Se
+        # mueve SIEMPRE, incluso si algo quedó pendiente arriba — el acta ya
+        # se creó, y lo pendiente ya vive en su propio archivo para reintentar
+        # (ver bundle_pendiente arriba); reprocesar este JSON de nuevo
+        # duplicaría la reunión.
         processed_dir = ROOT / cfg["paths"]["processed_dir"]
         processed_dir.mkdir(parents=True, exist_ok=True)
         dest = processed_dir / staging_path.name
-        shutil.move(str(staging_path), str(dest))
+        with open(dest, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        staging_path.unlink()
 
         md_path = staging_path.with_suffix(".md")
         if md_path.exists():

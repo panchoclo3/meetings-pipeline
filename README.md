@@ -6,14 +6,14 @@ breve → escritura en Notion.
 
 ## Estado actual
 
-**Probado de punta a punta con audio real**, en Windows con Python 3.12,
-`whisperx` 3.8.6 y `ffmpeg` 9.0: transcripción (paso 1) → extracción (paso 2)
-→ staging (paso 3) → push a Notion (paso 4) → resumen semanal en Notion
-(paso 5) → propuesta de reconciliación de decisiones (paso 6) → aplicación
-automática de esa propuesta en Notion (paso 7). Las tres bases de Notion
-(Reuniones, Tareas, Decisiones) están compartidas con la integración y sus
-IDs viven en `.env` (ver [Setup de Notion](#3-setup-de-notion)). Detalle de
-qué se verificó en cada corrida: [Qué se probó y qué no](#qué-se-probó-y-qué-no).
+Pipeline con esquema **Reunión → Idea → Decisión → Tarea**: transcripción
+(paso 1) → extracción (paso 2, ya clasifica cada cosa en su nivel correcto)
+→ staging (paso 3) → push del acta + reconciliación in-línea contra Notion
+en vivo (paso 4 — ver [Filosofía](#filosofía-del-pipeline-por-qué-está-diseñado-así)).
+Las cuatro bases de Notion (Reuniones, Tareas, Decisiones, Ideas) están
+compartidas con la integración y sus IDs viven en `.env` (ver
+[Setup de Notion](#3-setup-de-notion)). Detalle de qué se verificó en cada
+corrida: [Qué se probó y qué no](#qué-se-probó-y-qué-no).
 
 > Este pipeline no usa Telegram — el resumen semanal se escribe únicamente
 > en una subpágina de Notion. Si ves referencias a Telegram en secciones
@@ -26,6 +26,13 @@ qué se verificó en cada corrida: [Qué se probó y qué no](#qué-se-probó-y-
   ni automatización silenciosa.
 - **Un solo punto de revisión humana**: después de la extracción (paso 2), antes
   de escribir en Notion (paso 4). Todo lo demás corre sin intervención.
+- **No duplicar es la regla central de este Notion**: el error más caro de
+  este proyecto ha sido crear duplicados de trabajo ya registrado con otras
+  palabras. Por eso el paso 4 nunca escribe una Idea/Decisión/Tarea nueva sin
+  antes consultar Notion en vivo y comparar semánticamente contra lo que ya
+  existe (ver `scripts/06_reconciliacion.py`). Ante la duda, el pipeline
+  prefiere menos entradas, mejor ubicadas, con la razón explícita — no
+  registrar cada mensaje puntual.
 - **El JSON de staging es la fuente de verdad**: el `.md` que se genera es solo
   para lectura rápida. Si algo está mal, edita el `.json` directamente.
 - **Notion es el sistema de registro, no el motor de búsqueda**: la búsqueda
@@ -42,15 +49,15 @@ ventana-celeste-pipeline/
 ├── prompts/
 │   ├── extraction_prompt.txt             ← prompt del paso 2 (editable sin tocar código)
 │   ├── weekly_digest_prompt.txt          ← prompt del paso 5 (resumen semanal)
-│   └── decisiones_reconciliacion_prompt.txt ← prompt del paso 6 (propuesta de decisiones)
+│   └── reconciliacion_prompt.txt         ← prompt de scripts/06_reconciliacion.py
 ├── scripts/
 │   ├── 01_transcribe.py                  ← Paso 1: ASR + diarización (WhisperX)
-│   ├── 02_extract.py                     ← Paso 2: extracción estructurada (Claude API)
+│   ├── 02_extract.py                     ← Paso 2: extracción estructurada (Claude API) — clasifica Idea/Decisión/Tarea
 │   ├── 03_staging_review.py              ← Paso 3: genera resumen .md para revisión
-│   ├── 04_push_notion.py                 ← Paso 4: escribe en Notion (API directa)
-│   ├── 05_weekly_digest.py               ← Paso 5 (independiente): resumen semanal en Notion
-│   ├── 06_decisiones_reconciliacion.py   ← Paso 6 (independiente): propuesta de decisiones, solo lectura de Notion
-│   ├── 07_aplicar_decisiones.py          ← Paso 7 (independiente): aplica la propuesta del paso 6 en Notion
+│   ├── 04_push_notion.py                 ← Paso 4: crea el acta y reconcilia+aplica in-línea (llama a 06 y 07)
+│   ├── 05_weekly_digest.py               ← Paso 5 (independiente): resumen semanal + reconciliación de respaldo
+│   ├── 06_reconciliacion.py              ← compara Ideas/Decisiones/Tareas candidatas contra Notion en vivo, solo lectura
+│   ├── 07_aplicar_cambios.py             ← aplica la propuesta del paso 6 en Notion (crea/actualiza)
 │   ├── pipeline.py                       ← orquestador: corre pasos 1→2→3 y se detiene
 │   ├── notion_client.py                  ← wrapper de la API REST de Notion
 │   ├── progress.py                       ← visibilidad de progreso/errores, usado por todos los pasos (ver abajo)
@@ -58,8 +65,9 @@ ventana-celeste-pipeline/
 ├── data/
 │   ├── audio/                            ← coloca aquí tus grabaciones
 │   ├── transcripts/                      ← salida del paso 1
-│   ├── staging/                          ← salida del paso 2 (pendiente de revisión) y propuestas de decisiones del paso 6
-│   └── processed/                        ← archivo histórico tras el paso 4
+│   ├── staging/                          ← salida del paso 2 (pendiente de revisión) y bundles de reconciliación/pendientes
+│   ├── processed/                        ← archivo histórico tras el paso 4
+│   └── logs/                             ← log completo de cada corrida (ver "Visibilidad de progreso y errores")
 ├── requirements.txt
 └── .env.example
 ```
@@ -120,11 +128,16 @@ Los scripts (`01_transcribe.py`, `02_extract.py`, `04_push_notion.py`) cargan
 
 ### 3. Setup de Notion
 
-Necesitas tres bases de datos en Notion (pueden estar en distintas páginas):
-**Reuniones**, **Tareas** y **Decisiones**. Los nombres de propiedad no tienen
-por qué ser exactamente los de abajo — lo único que importa es que coincidan
-con lo que está en `config/config.yaml` → `notion.propiedades_*`. Esta es la
-configuración real ya cargada en este repo, a modo de referencia:
+Necesitas cuatro bases de datos en Notion (pueden estar en distintas páginas):
+**Reuniones**, **Tareas del equipo**, **Decisiones de diseño** e **Ideas**.
+Los nombres de propiedad no tienen por qué ser exactamente los de abajo — lo
+único que importa es que coincidan con lo que está en `config/config.yaml` →
+`notion.propiedades_*`. Esta es la configuración real ya cargada en este
+repo, a modo de referencia:
+
+> Existe además una base separada "Tareas Coordinador (Francisco)" para
+> admin personal — el pipeline **no la toca**, a propósito: no es trabajo que
+> derive de reuniones de equipo.
 
 **Base "Reuniones"**
 | Propiedad | Tipo | Nombre real en `config.yaml` |
@@ -137,28 +150,38 @@ configuración real ya cargada en este repo, a modo de referencia:
 | Tipo | Select (reunion_proyecto, conversacion_profesor, brainstorming, espontanea) | `Tipo` |
 | Estado | **Select** (Borrador IA, Revisado) | `Estado` |
 
-**Base "Tareas" (Kanban)**
+**Base "Tareas del equipo"**
 | Propiedad | Tipo | Nombre real en `config.yaml` |
 |---|---|---|
 | Título | Title | `Nombre` |
 | Responsable | **Person** (usuarios reales de Notion, admite varios) | `Responsable` |
-| Prototipo | Select | `Prototipo` |
-| Area | Select | `Area` |
-| Prioridad | Select (Alta, Media, Baja — con mayúscula inicial) | `Prioridad` |
+| Prototipo | Select (Autonomo, Mediado, Escolar, Hogar, Transversal) | `Prototipo` |
+| Área | Select (Diseño, Fabricacion, Electronica, Software, Difusion, Administrativo, Investigacion) | `Área` |
+| Prioridad | Select (Alta, Media, Baja) | `Prioridad` |
 | Estado | **Status** (Not started, In progress, Done — en inglés) | `Estado` |
 | Fecha | Date | `Fecha` |
-| Reunión origen | Relation → apunta a "Reuniones" | `Reunion origen` (sin tilde) |
+| Reunión origen | Relation → "Reuniones" | `Reunion origen` (sin tilde) |
 | Notas | Text | `Notas` |
+| Tarea madre | Self-relation → la épica de la que cuelga | `Tarea madre` |
+| Subtareas | Self-relation (lado inverso de Tarea madre) | `Subtareas` |
 
-> Esta base ya no tiene campo `Proyecto` — todas sus tareas son de Ventana
-> Celeste por definición. El campo `Responsable (IA)` (select de un solo
-> valor, "Francisco"/"Gonzalo"/"Patricio") queda **deprecado**: el pipeline
-> ya no lo usa ni lo borra, sigue existiendo en Notion como historial.
+> **`Prototipo` y `Área` son ortogonales y no se mezclan** — un error
+> histórico frecuente en este proyecto fue poner "Autonomo" en Área. Área es
+> la disciplina del trabajo (Software, Fabricación...), Prototipo es a cuál
+> de los productos pertenece.
+>
+> **Toda tarea nueva cuelga de una épica** (`Tarea madre` obligatorio, sin
+> excepciones) — el catálogo cerrado de épicas vive en
+> `config.yaml → notion.epicas` (nombre → page ID real, ver
+> [Épicas y decisiones madre](#épicas-y-decisiones-madre)). Si ninguna
+> encaja, el pipeline **no crea una épica nueva por su cuenta** — la tarea
+> queda pendiente con el nombre que Claude propone, para que la agregues a
+> mano.
 >
 > ⚠️ **`Responsable` es tipo `person`, no `select`** — Notion exige el user
 > ID real de cada persona, no un nombre en texto. El pipeline extrae nombres
 > en texto libre del audio y los resuelve vía
-> `scripts/04_push_notion.py::resolver_persona()`, que primero consulta
+> `scripts/07_aplicar_cambios.py::resolver_persona()`, que primero consulta
 > `config.yaml → notion.resolucion_personas` (mapeo editado a mano) y, si
 > falta, intenta resolverlo automáticamente contra `/v1/users`. Los nombres
 > que no se logran resolver (típico de invitados sin acceso completo a la
@@ -166,26 +189,55 @@ configuración real ya cargada en este repo, a modo de referencia:
 > [Resolución de personas](#resolución-de-personas-responsable).
 >
 > ⚠️ **`Estado` en Tareas es tipo `status`, no `select`** — Notion no deja
-> crear opciones de `status` nuevas vía API, así que el pipeline mapea
-> `"Pendiente"` → `"Not started"` en código
-> (`scripts/04_push_notion.py::ESTADO_TAREA_A_STATUS`). Si cambias las
-> opciones de esa base, actualiza también ese diccionario.
-> `Estado` en Reuniones, en cambio, sí es `select` — no necesita mapeo.
+> crear opciones de `status` nuevas vía API, así que el pipeline escribe
+> siempre `"Not started"` al crear una tarea (nunca inventa un estado de
+> avance). `Estado` en Reuniones, en cambio, sí es `select`.
 
-**Base "Decisiones"** — el pipeline la lee en el paso 6 y escribe en ella
-automáticamente en el paso 7 (ver
-[Paso 6](#paso-6-independiente-reconciliación-de-decisiones-propuesta) y
-[Paso 7](#paso-7-independiente-aplicación-automática-de-decisiones)):
+**Base "Decisiones de diseño"** — el pipeline la lee y escribe en ella
+in-línea dentro del paso 4 (ver
+[Reconciliación y aplicación](#reconciliación-y-aplicación-pasos-6-y-7)):
 | Propiedad | Tipo | Nombre real en `config.yaml` |
 |---|---|---|
 | Decision | Title | `Decision` |
 | Tema | Text | `Tema` |
-| Razon | Text | `Razon` |
-| Estado | Status (Not started, In progress, Done) | `Estado` |
-| Prototipo | Select (Autonomo, Mediado) | `Prototipo` |
+| Razon | Text (**obligatorio** — el campo más importante de esta base) | `Razon` |
+| Estado | **Select** — Vigente, Tentativa, Superada, Revertida | `Estado` |
+| Prototipo | Select (Autonomo, Mediado, Escolar, Hogar, Transversal) | `Prototipo` |
 | Fecha | Date | `Fecha` |
+| Reunión origen | Relation → "Reuniones" | `Reunion origen` |
+| Decision madre | Self-relation → una de las 4 decisiones madre | `Decision madre` |
+| Sub-decisiones | Self-relation (lado inverso de Decision madre) | `Sub-decisiones` |
+| Reemplazada por | Self-relation → la decisión que la dejó obsoleta | `Reemplazada por` |
+| Reemplaza a | Self-relation (lado inverso de Reemplazada por) | `Reemplaza a` |
+| Tareas de implementación | Relation → "Tareas del equipo" | `Tareas de implementacion` |
 
-**Comparte las tres bases con tu integración** — este paso es fácil de
+> **`Estado` describe VIGENCIA, nunca avance de implementación.** Una
+> decisión ya tomada pero pendiente de ejecutar sigue **Vigente** — el
+> trabajo va como Tarea con `Tareas de implementacion` apuntando a ella,
+> nunca se usa un estado tipo "in progress" acá. Cuando el equipo cambia de
+> opinión, el pipeline **nunca sobrescribe** una decisión: crea la nueva
+> Vigente, marca la anterior Superada, y enlaza `Reemplazada por` (en la
+> anterior) / `Reemplaza a` (lado inverso).
+>
+> **Toda decisión nueva cuelga de una de las 4 decisiones madre**
+> (`Decision madre` obligatorio) — catálogo cerrado en
+> `config.yaml → notion.decisiones_madre`, ver
+> [Épicas y decisiones madre](#épicas-y-decisiones-madre).
+
+**Base "Ideas"** — nivel más bajo del pipeline (propuestas sin compromiso
+todavía). No tiene relation a Reuniones, solo un campo de texto:
+| Propiedad | Tipo | Nombre real en `config.yaml` |
+|---|---|---|
+| Idea | Title | `Idea` |
+| Estado | Select (Propuesta, En discusion, Aprobada, Descartada, Congelada) | `Estado` |
+| Horizonte | Select (Ahora, V2 MIM, Feria, Futuro, Congelada) | `Horizonte` |
+| Encaje filosofico | Select (Refuerza, Neutro, Tensiona) | `Encaje filosofico` |
+| Prototipo | **Multi-select** (incluye "Estacion nueva", a diferencia de Tareas/Decisiones) | `Prototipo` |
+| Origen | Text libre (título de la reunión, no relation) | `Origen` |
+| Esfuerzo | Select (Bajo, Medio, Alto, Muy alto) | `Esfuerzo` |
+| Problema que resuelve | Text | `Problema que resuelve` |
+
+**Comparte las cuatro bases con tu integración** — este paso es fácil de
 olvidar y la falla resultante no es obvia: Notion devuelve un
 `404 object_not_found` (no un error de permisos) si la base existe pero no
 está compartida. En cada base: `···` (esquina superior derecha) → "Conexiones"
@@ -202,6 +254,7 @@ notion:
   reuniones_database_id_env: "NOTION_REUNIONES_DATABASE_ID"
   tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"
   decisiones_database_id_env: "NOTION_DECISIONES_DATABASE_ID"
+  ideas_database_id_env: "NOTION_IDEAS_DATABASE_ID"
 ```
 
 ```bash
@@ -209,7 +262,24 @@ notion:
 NOTION_REUNIONES_DATABASE_ID=xxxxx
 NOTION_TAREAS_DATABASE_ID=xxxxx
 NOTION_DECISIONES_DATABASE_ID=xxxxx
+NOTION_IDEAS_DATABASE_ID=xxxxx
 ```
+
+### Épicas y decisiones madre
+
+`config.yaml → notion.epicas` y `notion.decisiones_madre` son catálogos
+cerrados (código → `{id, nombre}`) que el pipeline usa para resolver a qué
+página real de Notion cuelga cada tarea/decisión nueva. Son deliberadamente
+un catálogo chico y estable — el pipeline nunca crea una épica o decisión
+madre nueva por su cuenta (ver Filosofía). Si necesitas agregar una:
+
+1. Créala a mano en Notion (una tarea sin `Tarea madre` para una épica
+   nueva, o una decisión sin `Decision madre` para una decisión madre nueva).
+2. Copia su ID de página y agrégala a `config.yaml` con el mismo formato que
+   las existentes.
+3. Si había tareas/decisiones "pendientes" esperando esa épica (ver
+   [Reconciliación y aplicación](#reconciliación-y-aplicación-pasos-6-y-7)),
+   reintenta aplicando ese archivo pendiente.
 
 Para el paso 5 (resumen semanal) también necesitas compartir con la
 integración la página "Ventana Celeste" (o la que configures como
@@ -221,10 +291,13 @@ Celeste" → "Resúmenes semanales").
 
 ### 4. Ajustar vocabulario controlado
 
-Edita `config/config.yaml` → `proyectos`, `tags_permitidos` y
-`personas_permitidas` con tus valores reales (ya viene pre-cargado con los
-del proyecto Ventana Celeste como ejemplo). Estas listas se inyectan
-automáticamente en el prompt de extracción.
+Edita `config/config.yaml` → `proyectos`, `tags_permitidos`,
+`personas_permitidas`, `prototipos_permitidos`, `prototipos_ideas` y
+`areas_permitidas` con tus valores reales (ya viene pre-cargado con los del
+proyecto Ventana Celeste). Estas listas se inyectan automáticamente en el
+prompt de extracción; `epicas` y `decisiones_madre` (catálogos con ID real
+de Notion) se ajustan aparte, ver
+[Épicas y decisiones madre](#épicas-y-decisiones-madre).
 
 ### Resolución de personas (`Responsable`)
 
@@ -252,15 +325,17 @@ Cuando un nombre extraído no tiene ID (ni en `resolucion_personas` ni vía
 API), el pipeline **no** lo descarta silenciosamente: deja el campo
 `Responsable` sin esa persona, anota `[Responsable sin resolver: "Nombre"]`
 en el campo `Notas` de la tarea, y lo imprime como advertencia al correr
-`04_push_notion.py`. `05_weekly_digest.py` además agrega al resumen semanal
-en Notion cuántas tareas siguen con un responsable sin resolver.
+`04_push_notion.py` (donde ahora corre `07_aplicar_cambios.py::resolver_persona()`
+in-línea). `05_weekly_digest.py` además agrega al resumen semanal en Notion
+cuántas tareas siguen con un responsable sin resolver.
 
 ## Uso
 
-> Los pasos 1-6 fueron probados de punta a punta con audio y Notion reales
-> (ver detalle en [Qué se probó y qué no](#qué-se-probó-y-qué-no); esa
-> corrida es anterior a que se sacara Telegram del pipeline y se agregara el
-> paso 7 — su contenido histórico usa nombres de campos ya deprecados).
+> El esquema Reunión → Idea → Decisión → Tarea y la reconciliación in-línea
+> contra Notion en vivo se agregaron el 2026-08-25. La sección
+> [Qué se probó y qué no](#qué-se-probó-y-qué-no) más abajo describe una
+> corrida anterior a este cambio — su contenido histórico usa nombres de
+> campos ya deprecados (`Responsable (IA)`, sin `Área`/`Tarea madre`, etc.).
 
 **Flujo recomendado (orquestado, se detiene antes de escribir en Notion):**
 
@@ -282,12 +357,24 @@ python scripts/03_staging_review.py data/staging/<archivo_generado>.json
 
 python scripts/04_push_notion.py data/staging/<archivo_generado>.json
 
-# Si por esta vez no quieres crear las tareas en Notion (solo la reunión),
-# agrega --sin-tareas. Las decisiones nunca se tocan en este paso — solo
-# se crean/actualizan en los pasos 6/7, así que no necesitas ningún flag
-# para excluirlas.
+# Si por esta vez no quieres crear las tareas en Notion (solo la reunión +
+# ideas/decisiones), agrega --sin-tareas.
 python scripts/04_push_notion.py data/staging/<archivo_generado>.json --sin-tareas
 ```
+
+Qué hace el paso 4 puntualmente: crea el acta en "Reuniones", y para cada
+idea/decisión/tarea candidata de esta reunión — reconcilia in-línea contra
+Notion en vivo (¿ya existe algo equivalente?) y aplica el resultado: crea lo
+genuinamente nuevo (con Tarea madre / Decision madre / Reunion origen
+resueltos), actualiza lo existente que corresponda (estado de una idea,
+vigencia de una decisión, incluyendo marcar Superada + enlazar Reemplazada
+por si una decisión reemplaza a otra), y dedupe tareas que ya existen en la
+misma épica. Al final corre 3 chequeos de consistencia (tareas/decisiones
+huérfanas, decisiones Superada sin reemplazo) y los imprime. Si algo queda
+pendiente (típicamente: ninguna épica encaja para una tarea), se guarda en
+`data/staging/pendientes_reconciliacion_<fecha-hora>.json` — resuélvelo
+(ver [Épicas y decisiones madre](#épicas-y-decisiones-madre)) y corre
+`python scripts/07_aplicar_cambios.py <ese_archivo>` para reintentar.
 
 ### Paso 5 (independiente) — Resumen semanal en Notion
 
@@ -300,56 +387,50 @@ python scripts/05_weekly_digest.py
 ```
 
 Qué hace: junta las reuniones de los últimos 7 días desde la base
-"Reuniones", les pide a Claude un resumen en texto plano, corre la
-reconciliación de decisiones (paso 6) y aplica esa propuesta automáticamente
-en Notion (paso 7), y agrega todo — resumen + recuento de qué se creó o
-actualizó en Decisiones — como bloque nuevo al final de la página "Resúmenes
-semanales" en Notion (la crea si no existe todavía).
+"Reuniones", les pide a Claude un resumen en texto plano, y corre la
+reconciliación (pasos 6/7) como **red de seguridad** — normalmente cada
+reunión ya se reconcilió sola al correr el paso 4, así que esto solo
+encuentra algo si esa reconciliación quedó pendiente en alguna reunión
+reciente. Agrega todo — resumen + recuento de qué se creó/actualizó — como
+bloque nuevo al final de la página "Resúmenes semanales" en Notion (la crea
+si no existe todavía).
 
-### Paso 6 (independiente) — Reconciliación de decisiones (propuesta)
+### Reconciliación y aplicación (pasos 6 y 7)
 
-```bash
-python scripts/06_decisiones_reconciliacion.py
-```
-
-Compara las decisiones extraídas esta semana (leyendo `data/processed/*.json`)
-contra la base real "Decisiones" en Notion, y le pide a Claude que proponga:
-qué decisiones son genuinamente nuevas (con tema, razón, prototipo y estado
-inicial sugeridos), y qué decisiones existentes podrían necesitar un cambio
-de estado según lo discutido esta semana.
-
-Este script sigue sin escribir en la base "Decisiones" — solo compara y
-guarda la propuesta completa en
-`data/staging/decisiones_propuesta_<fecha>.json`. La escritura real la hace
-el paso 7, ya sea automáticamente desde `05_weekly_digest.py` o corriendo
-`07_aplicar_decisiones.py` a mano sobre ese JSON.
-
-### Paso 7 (independiente) — Aplicación automática de decisiones
+Normalmente no los corres a mano — `04_push_notion.py` ya los invoca
+in-línea por vos. Sirven para depurar sin re-crear el acta, o para
+reintentar algo que quedó pendiente:
 
 ```bash
-python scripts/07_aplicar_decisiones.py
-# o, sobre una propuesta específica en vez de la más reciente:
-python scripts/07_aplicar_decisiones.py data/staging/decisiones_propuesta_2026-08-12.json
+# Paso 6 — compara candidatos contra Notion en vivo, junta de los últimos 7
+# días desde data/processed/*.json, guarda el bundle en data/staging/:
+python scripts/06_reconciliacion.py
+
+# Paso 7 — aplica un bundle ya generado (por defecto, el más reciente):
+python scripts/07_aplicar_cambios.py
+python scripts/07_aplicar_cambios.py data/staging/reconciliacion_propuesta_20260819_120000.json
 ```
 
-Lee una propuesta generada por el paso 6 y la aplica en la base real
-"Decisiones": crea una página por cada decisión nueva (con Decision, Tema,
-Razon, Prototipo, Estado y Fecha completos, y el origen + razón repetidos en
-el cuerpo de la página — a diferencia de decisiones cargadas a mano, que
-suelen quedar con la página en blanco), y actualiza el Estado de las
-decisiones existentes marcadas para actualización, dejando además un bloque
-en el cuerpo de esa página con la fecha y la razón del cambio.
+`06_reconciliacion.py` **nunca escribe en Notion** — solo compara (ideas
+existentes, decisiones no-Superadas, tareas no-Done agrupadas por épica) y
+guarda `{"candidatos": ..., "propuesta": ...}` en
+`data/staging/reconciliacion_propuesta_<fecha-hora>.json`. La escritura real
+la hace `07_aplicar_cambios.py`: crea páginas nuevas (con todo el contenido
+completo en el cuerpo, a diferencia de páginas cargadas a mano que suelen
+quedar en blanco) y actualiza las existentes, con las reglas de self-relation
+child-side descritas en Setup de Notion.
 
-Si algo falla a mitad de camino, **no** se pierde ni se duplica nada: el
-JSON de staging queda reescrito solo con lo que no se pudo aplicar, listo
-para reintentar corriendo el script de nuevo.
+Si algo falla o queda pendiente a mitad de camino, **no** se pierde ni se
+duplica nada: el bundle se reescribe solo con lo pendiente (los candidatos
+que ya se aplicaron bien no se vuelven a tocar), listo para reintentar
+corriendo el script de nuevo.
 
 > Esta es la única escritura automática (sin revisión humana previa) de
-> este pipeline — el resto del flujo (Tareas, Reuniones) también escribe
-> solo, pero pasa primero por el punto de control del paso 3. Las páginas
-> que este script crea o modifica quedan marcadas en su contenido como
-> generadas por el pipeline, para poder distinguirlas de una carga manual
-> si algo se ve raro.
+> este pipeline — el resto del flujo (el acta en sí) también escribe solo,
+> pero todo pasa primero por el punto de control del paso 3. Las páginas que
+> este mecanismo crea o modifica quedan marcadas en su contenido como
+> generadas por el pipeline, para poder distinguirlas de una carga manual si
+> algo se ve raro.
 
 ## Visibilidad de progreso y errores
 
@@ -386,11 +467,17 @@ El archivo `.md` generado pone **arriba** cualquier señal de incertidumbre:
 
 - `confianza_metadata` distinta de "alta" → revisa proyecto/tags sugeridos.
 - Tareas con `confianza: "baja"` → verifica el responsable asignado.
+- Tareas con `epica_sugerida: "NINGUNA_ENCAJA"` → revisa la justificación;
+  van a quedar pendientes en el paso 4 hasta que agregues la épica.
+- El **nivel** de cada cosa: ¿de verdad es una Tarea y no una Idea todavía sin
+  compromiso? ¿Una Decisión de verdad quedó zanjada, o sigue Tentativa?
 - Cualquier entrada en `advertencias_extraccion` → el modelo te dice explícitamente
-  qué no le quedó claro (hablante ambiguo, tarea sin dueño evidente, etc.).
+  qué no le quedó claro (hablante ambiguo, tarea sin dueño evidente, nivel dudoso, etc.).
 
 Si todo se ve bien, aprueba y avanza al paso 4. Si algo está mal, edita el `.json`
-correspondiente en `data/staging/` — es la fuente de verdad, no el `.md`.
+correspondiente en `data/staging/` — es la fuente de verdad, no el `.md`. Recordá
+que esto son candidatos: el paso 4 todavía va a comparar contra Notion en vivo
+antes de crear nada.
 
 ## Qué se probó y qué no
 

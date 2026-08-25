@@ -18,6 +18,11 @@ Qué hace:
 Por qué no hay una "interfaz" más elaborada: para un flujo personal, abrir
 un .md en tu editor y tocar el .json si algo está mal es más rápido y más
 confiable que mantener una UI de revisión separada.
+
+Nota: "ideas"/"decisiones"/"tareas" acá son CANDIDATOS todavía sin resolver
+contra Notion (sin épica ni decisión madre reales, sin chequeo de duplicado)
+— eso pasa recién en el paso 4. Revisa el contenido y el nivel (¿de verdad es
+una Tarea y no una Idea?), no la ubicación final en Notion.
 """
 
 import sys
@@ -42,11 +47,12 @@ def render_markdown(data: dict) -> str:
 
     warnings = data.get("advertencias_extraccion", [])
     low_confidence_tasks = [t for t in data["tareas"] if t.get("confianza") == "baja"]
+    tareas_sin_epica = [t for t in data["tareas"] if t.get("epica_sugerida") == "NINGUNA_ENCAJA"]
 
     lines.append(f"# {meta['titulo_sugerido']}")
     lines.append("")
 
-    if warnings or meta["confianza_metadata"] != "alta" or low_confidence_tasks:
+    if warnings or meta["confianza_metadata"] != "alta" or low_confidence_tasks or tareas_sin_epica:
         lines.append("## ⚠️ REVISAR ANTES DE APROBAR")
         if meta["confianza_metadata"] != "alta":
             lines.append(f"- Confianza de metadata (proyecto/tags): **{meta['confianza_metadata']}**")
@@ -54,6 +60,11 @@ def render_markdown(data: dict) -> str:
             lines.append(f"- {w}")
         for t in low_confidence_tasks:
             lines.append(f"- Tarea de baja confianza: \"{t['titulo']}\" (responsable: {', '.join(t['responsable']) or 'sin asignar'})")
+        for t in tareas_sin_epica:
+            lines.append(
+                f"- Tarea sin épica que encaje: \"{t['titulo']}\" — propuesta: "
+                f"{t.get('justificacion_epica') or '(sin justificación)'}"
+            )
         lines.append("")
 
     lines.append("## Metadata")
@@ -72,26 +83,32 @@ def render_markdown(data: dict) -> str:
     lines.append("")
 
     if data["decisiones"]:
-        lines.append("## Decisiones")
+        lines.append("## Decisiones (candidatas)")
         for d in data["decisiones"]:
-            estado_tag = "✅" if d["estado"] == "confirmada" else "🔸 tentativa"
-            lines.append(f"- {estado_tag} **{d['decision']}** — {d['razon']}")
+            tag = "✅ Vigente" if d["estado_vigencia"] == "Vigente" else "🔸 Tentativa"
+            reemplazo = f" (podría reemplazar: {d['posible_reemplazo_de']})" if d.get("posible_reemplazo_de") else ""
+            lines.append(
+                f"- {tag} — **{d['decision']}** [{d['decision_madre_sugerida']}] — {d['razon']}{reemplazo}"
+            )
         lines.append("")
 
     if data["tareas"]:
-        lines.append("## Tareas")
+        lines.append("## Tareas (candidatas)")
         for t in data["tareas"]:
             conf_tag = {"alta": "", "media": " (confianza media)", "baja": " ⚠️ (confianza baja)"}[t["confianza"]]
-            lines.append(f"- [ ] {t['titulo']} — *{', '.join(t['responsable']) or 'sin asignar'}*{conf_tag}")
+            epica = t["epica_sugerida"] if t["epica_sugerida"] != "NINGUNA_ENCAJA" else "⚠️ sin épica"
+            lines.append(
+                f"- [ ] {t['titulo']} — *{', '.join(t['responsable']) or 'sin asignar'}* "
+                f"[{epica} / {t['area']}]{conf_tag}"
+            )
         lines.append("")
 
     if data["ideas"]:
         lines.append("## Ideas")
         for i in data["ideas"]:
-            estado = {"propuesta": "💡", "descartada": "❌", "en_evaluacion": "🔍"}[i["estado"]]
-            lines.append(f"- {estado} **{i['idea']}** — {i['contexto']}")
-            if i.get("razon_descarte"):
-                lines.append(f"  - Razón de descarte: {i['razon_descarte']}")
+            estado_icono = "🔍" if i["estado"] == "En discusion" else "💡"
+            horizonte = f" [{i['horizonte']}]" if i.get("horizonte") else ""
+            lines.append(f"- {estado_icono} **{i['idea']}**{horizonte} — {i.get('problema_que_resuelve') or 'sin problema identificado'}")
         lines.append("")
 
     if data["preguntas_abiertas"]:
@@ -113,14 +130,21 @@ def print_terminal_summary(data: dict):
     meta = data["metadata"]
     warnings = data.get("advertencias_extraccion", [])
     low_conf_tasks = [t for t in data["tareas"] if t.get("confianza") == "baja"]
+    sin_epica = [t for t in data["tareas"] if t.get("epica_sugerida") == "NINGUNA_ENCAJA"]
 
     print(f"\n📄 {meta['titulo_sugerido']}")
     print(f"   Proyecto: {meta['proyecto_sugerido']} | Tipo: {meta['tipo_reunion']}")
     print(f"   Confianza metadata: {meta['confianza_metadata']}")
-    print(f"   Decisiones: {len(data['decisiones'])} | Tareas: {len(data['tareas'])} | Ideas: {len(data['ideas'])}")
+    print(f"   Ideas: {len(data['ideas'])} | Decisiones: {len(data['decisiones'])} | Tareas: {len(data['tareas'])}")
 
-    if warnings or low_conf_tasks:
-        print(f"\n   ⚠️  {len(warnings)} advertencia(s) del modelo, {len(low_conf_tasks)} tarea(s) de baja confianza")
+    avisos = list(warnings)
+    if low_conf_tasks:
+        avisos.append(f"{len(low_conf_tasks)} tarea(s) de baja confianza")
+    if sin_epica:
+        avisos.append(f"{len(sin_epica)} tarea(s) sin épica que encaje")
+
+    if avisos:
+        print(f"\n   ⚠️  {len(avisos)} señal(es) a revisar")
         print("   → Revisa el archivo .md antes de aprobar.")
     else:
         print("\n   ✅ Sin advertencias — revisión rápida recomendada, no exhaustiva.")

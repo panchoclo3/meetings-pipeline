@@ -47,6 +47,36 @@ tipos_reunion:
   - "brainstorming"
   - "espontanea"
 
+# Vocabulario compartido por Tareas y Decisiones (select simple). La base
+# Ideas usa una lista distinta (prototipos_ideas más abajo) porque ahí el
+# campo es multi-select e incluye "Estacion nueva".
+prototipos_permitidos:
+  - "Autonomo"
+  - "Mediado"
+  - "Escolar"
+  - "Hogar"
+  - "Transversal"
+
+prototipos_ideas:
+  - "Autonomo"
+  - "Mediado"
+  - "Escolar"
+  - "Hogar"
+  - "Estacion nueva"
+  - "Transversal"
+
+# Disciplina del trabajo en Tareas. Ortogonal a Prototipo — NUNCA mezclar
+# (ej: "Autonomo" no es un Área, es un Prototipo; error histórico frecuente
+# en este proyecto, ver README).
+areas_permitidas:
+  - "Diseño"
+  - "Fabricacion"
+  - "Electronica"
+  - "Software"
+  - "Difusion"
+  - "Administrativo"
+  - "Investigacion"
+
 # Vocabulario controlado de personas — usado como referencia obligatoria en
 # el prompt de extracción para el campo "responsable" de cada tarea (acepta
 # cero, uno o más nombres de esta lista). Debe reflejar los mismos nombres
@@ -88,7 +118,8 @@ claude:
 # mismo patrón que whisperx.hf_token_env más abajo.
 notion:
   reuniones_database_id_env: "NOTION_REUNIONES_DATABASE_ID"  # página "Reuniones"
-  tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"        # página "Tareas" (Kanban)
+  tareas_database_id_env: "NOTION_TAREAS_DATABASE_ID"        # página "Tareas del equipo"
+  ideas_database_id_env: "NOTION_IDEAS_DATABASE_ID"          # página "Ideas"
   # Nombre exacto de las propiedades en Notion (deben coincidir con el esquema
   # real de tus bases; si les cambias el nombre en Notion, actualízalo aquí)
   propiedades_reuniones:
@@ -107,15 +138,24 @@ notion:
     # usa desde el pipeline.
     responsable: "Responsable"
     prototipo: "Prototipo"
+    # Disciplina del trabajo — ORTOGONAL a "Prototipo", nunca mezclar (ver
+    # areas_permitidas más arriba y README).
+    area: "Área"
     prioridad: "Prioridad"
     estado: "Estado"
     fecha: "Fecha"
     reunion_origen: "Reunion origen"
     # Campo de texto libre en la base Tareas. Se usa para dejar constancia
     # cuando un nombre extraído no pudo resolverse a un user ID de Notion
-    # (ver notion.resolucion_personas y scripts/04_push_notion.py::resolver_persona).
+    # (ver notion.resolucion_personas y scripts/07_aplicar_cambios.py::resolver_persona).
     # Confirmado contra el schema real vía API: existe como propiedad "text".
     notas: "Notas"
+    # Self-relation obligatoria: toda tarea nueva cuelga de una épica (ver
+    # notion.epicas más abajo). Se escribe SIEMPRE desde el lado hijo
+    # (la tarea) — setear esto en la épica no rellena el lado inverso, ver
+    # scripts/07_aplicar_cambios.py.
+    tarea_madre: "Tarea madre"
+    subtareas: "Subtareas"
   # Mapeo nombre → user ID real de Notion, usado para resolver el campo
   # "Responsable" (person) a partir de los nombres en texto libre que
   # extrae el pipeline del audio. Deja `null` si no tienes el ID — el
@@ -147,16 +187,98 @@ notion:
     Valeria: "bb5abeec-8ed1-456f-aeba-3fe6e1ac6516"
     Fernanda: "39dd872b-594c-810a-a3d8-00028749fa09"
     Patricio: "3a3d872b-594c-816b-bd43-000294d0fcba"
-  # Base "Decisiones" — el pipeline la lee (comparación en el paso 6) y
-  # escribe en ella automáticamente en el paso 7 (scripts/07_aplicar_decisiones.py).
+  # Base "Decisiones de diseño" — el pipeline la lee (comparación en el paso
+  # 6) y escribe en ella automáticamente en el paso 7 (scripts/07_aplicar_cambios.py).
   decisiones_database_id_env: "NOTION_DECISIONES_DATABASE_ID"
   propiedades_decisiones:
     decision: "Decision"
     tema: "Tema"
     razon: "Razon"
-    estado: "Estado"       # status: "Not started" | "In progress" | "Done"
-    prototipo: "Prototipo" # select: "Autonomo" | "Mediado"
+    # "Estado" describe VIGENCIA, nunca avance de implementación:
+    # Vigente = rige hoy | Tentativa = acordada pero no confirmada |
+    # Superada = reemplazada por otra (ver reemplazada_por) |
+    # Revertida = se deshizo sin reemplazo. El trabajo pendiente de una
+    # decisión Vigente vive en "tareas_implementacion", nunca en este campo.
+    estado: "Estado"
+    prototipo: "Prototipo" # select: Autonomo | Mediado | Escolar | Hogar | Transversal
     fecha: "Fecha"
+    reunion_origen: "Reunion origen"
+    # Self-relation: toda decisión nueva cuelga de una de las 4 decisiones
+    # madre (ver notion.decisiones_madre). Se escribe desde el lado hijo.
+    decision_madre: "Decision madre"
+    sub_decisiones: "Sub-decisiones"
+    # Cuando el equipo cambia de opinión: la decisión anterior se marca
+    # Superada y "reemplazada_por" apunta a la nueva (lado hijo = la
+    # anterior). Nunca se sobrescribe una decisión existente.
+    reemplazada_por: "Reemplazada por"
+    reemplaza_a: "Reemplaza a"
+    tareas_implementacion: "Tareas de implementacion"
+
+  # Base "Ideas" — propuestas sin compromiso, nivel más bajo del pipeline
+  # Reunión → Idea → Decisión → Tarea. No tiene relation a Reuniones (el
+  # esquema real solo trae "Origen" como texto libre).
+  propiedades_ideas:
+    idea: "Idea"
+    estado: "Estado"                       # Propuesta | En discusion | Aprobada | Descartada | Congelada
+    horizonte: "Horizonte"                 # Ahora | V2 MIM | Feria | Futuro | Congelada
+    encaje_filosofico: "Encaje filosofico" # Refuerza | Neutro | Tensiona
+    prototipo: "Prototipo"                 # multi_select, ver prototipos_ideas
+    origen: "Origen"                       # texto libre, no relation
+    esfuerzo: "Esfuerzo"                   # Bajo | Medio | Alto | Muy alto
+    problema_que_resuelve: "Problema que resuelve"
+
+  # Catálogo cerrado de épicas — toda tarea nueva cuelga de una de estas.
+  # Si de verdad ninguna encaja, el pipeline NO crea una épica nueva por su
+  # cuenta (ver README) — la tarea queda "pendiente" para que la agregues acá
+  # a mano después de crearla en Notion. IDs obtenidos el 2026-08-19 vía
+  # notion-query-data-sources (WHERE "Tarea madre" IS NULL).
+  epicas:
+    AUT-1:
+      id: "3c6dc87921a181948c65cde8f3c2ac40"
+      nombre: "Forma física final del Autónomo (V2 itinerante)"
+    AUT-2:
+      id: "3c7dc87921a18109be5bfee52b5217a6"
+      nombre: "Electrónica y alimentación segura del Autónomo"
+    AUT-3:
+      id: "3c7dc87921a1817d9639ffbfd57ee805"
+      nombre: "Software del Autónomo (estabilidad y ferias)"
+    MED-1:
+      id: "3c7dc87921a181caa5a5d7485959a9fb"
+      nombre: "Cerrar hardware óptico del Mediado"
+    MED-2:
+      id: "3c7dc87921a181e3948ed85417dd6ca5"
+      nombre: "Software e integración del Mediado"
+    DIF-1:
+      id: "3c7dc87921a181fbb05dfb642558347b"
+      nombre: "Feria de ingeniería e innovación"
+    DIF-2:
+      id: "3c7dc87921a1811ca45ad7019c1397d9"
+      nombre: "Alianza CATA"
+    DIF-3:
+      id: "3badc87921a181b48bd5d53b5a398f24"
+      nombre: "Plan de divulgación"
+    INF-1:
+      id: "3c7dc87921a1812e87b0df032c2b6a47"
+      nombre: "Infraestructura y accesos del equipo"
+    ADM-1:
+      id: "3c7dc87921a18178aef8e1463e7ac663"
+      nombre: "Salidas y visitas del equipo"
+
+  # Catálogo cerrado de decisiones madre — toda decisión nueva cuelga de una
+  # de estas 4. Mismos IDs obtenidos el 2026-08-19.
+  decisiones_madre:
+    D1:
+      id: "3c7dc87921a1816ba3abc740d50b75d9"
+      nombre: "Arquitectura física del Autónomo — forma, eje, alcance de fabricación"
+    D2:
+      id: "3c7dc87921a181ed810df764d76aea33"
+      nombre: "Modalidad de visualización del Autónomo — dispositivo y formato"
+    D3:
+      id: "3c7dc87921a1810d9e9ec200d3c65e14"
+      nombre: "Modelo de interacción y zoom — navegación del cielo"
+    D4:
+      id: "3c7dc87921a18100b1f3c7b61e11393c"
+      nombre: "Estrategia de despliegue y validación — dónde se prueba, dónde se muestra"
 
 # -----------------------------------------------------------------------------
 # Resumen semanal (scripts/05_weekly_digest.py) — se escribe como bloque
